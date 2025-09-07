@@ -28,13 +28,22 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
   if ($node->bundle() !== 'book_review') {
     return NULL;
   }
-  if (!$node->hasField('field_author')) {
+  if (!$node->hasField('field_author') || $node->get('field_author')->isEmpty()) {
     return NULL;
   }
-  $author = (string) $node->get('field_author')->value;
-  if ($author === '') {
-    return NULL;
+  // Attempt to resolve an author name from entity reference or value.
+  $author = NULL;
+  foreach ($node->get('field_author') as $item) {
+    if (isset($item->entity) && $item->entity) {
+      $label = trim((string) $item->entity->label());
+      if ($label !== '') { $author = $label; break; }
+    }
+    if (isset($item->value)) {
+      $val = trim((string) $item->value);
+      if ($val !== '') { $author = $val; break; }
+    }
   }
+  if (!$author) { return NULL; }
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
