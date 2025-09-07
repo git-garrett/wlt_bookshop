@@ -1,0 +1,42 @@
+<?php
+
+use Drupal\Core\Routing\RouteMatchInterface;
+use Drupal\node\NodeInterface;
+use Drupal\node\Entity\Node;
+
+/**
+ * Implements hook_help().
+ */
+function wlt_bookshop_help($route_name, RouteMatchInterface $route_match) {
+  switch ($route_name) {
+    case 'help.page.wlt_bookshop':
+      return t('WLT Bookshop provides an ISBN lookup service using the Open Library API. Use the service "wlt_bookshop.book_isbn_lookup", the helper function wlt_bookshop_get_isbn_from_node(), or the admin form at /admin/content/wlt-bookshop/isbn-process to manually process book review nodes. The lookup now uses the node\'s field_author rather than the sidebar title.');
+  }
+  return NULL;
+}
+
+/**
+ * Convenience helper: get ISBN from a book_review node's field_author.
+ *
+ * @param \Drupal\node\NodeInterface $node
+ *   A loaded node entity.
+ *
+ * @return string|null
+ *   The first ISBN found, or NULL if not available.
+ */
+function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
+  if ($node->bundle() !== 'book_review') {
+    return NULL;
+  }
+  if (!$node->hasField('field_author')) {
+    return NULL;
+  }
+  $author = (string) $node->get('field_author')->value;
+  if ($author === '') {
+    return NULL;
+  }
+
+  /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
+  $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
+  return $lookup->getIsbnByAuthor($author);
+}

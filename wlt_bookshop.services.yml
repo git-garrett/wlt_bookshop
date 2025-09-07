@@ -1,0 +1,5 @@
+services:
+  wlt_bookshop.book_isbn_lookup:
+    class: 'Drupal\\wlt_bookshop\\Service\\BookIsbnLookup'
+    arguments: ['@http_client', '@logger.channel.wlt_bookshop']
+

@@ -1,0 +1,7 @@
+wlt_bookshop.isbn_process_link:
+  title: 'Process Book Review ISBNs'
+  description: 'Lookup and populate missing ISBNs for book_review nodes.'
+  route_name: wlt_bookshop.isbn_process
+  parent: system.admin_content
+  weight: 100
+

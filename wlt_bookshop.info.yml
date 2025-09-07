@@ -1,0 +1,5 @@
+name: 'WLT Bookshop'
+type: module
+description: 'Provides ISBN lookup via Open Library for book reviews.'
+package: Custom
+core_version_requirement: ^10 || ^11
