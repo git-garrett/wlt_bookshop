@@ -7,3 +7,14 @@ wlt_bookshop.isbn_process:
     _permission: 'administer nodes'
   options:
     _admin_route: TRUE
+wlt_bookshop.remove_isbn:
+  path: '/wlt-bookshop/remove-isbn/{node}'
+  defaults:
+    _controller: '\Drupal\wlt_bookshop\Controller\IsbnAdminController::remove'
+  requirements:
+    _entity_access: 'node.update'
+  options:
+    parameters:
+      node:
+        type: entity:node
+    _admin_route: TRUE

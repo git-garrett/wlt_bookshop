@@ -1,0 +1,9 @@
+bookshop_featured:
+  version: 1.x
+  js:
+    js/bookshop_featured.js: {}
+  dependencies:
+    - core/drupal
+    - core/drupal.ajax
+    - core/jquery
+

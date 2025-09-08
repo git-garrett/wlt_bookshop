@@ -82,6 +82,13 @@ class BookshopFeaturedFormatter extends FormatterBase {
     $max = (int) $this->getSetting('max_widgets');
     if ($max < 1) { $max = 1; }
 
+    $entity = $items->getEntity();
+    $can_remove = $entity->access('update');
+    $token_service = \Drupal::service('csrf_token');
+
+    // Attach JS to handle hiding broken widgets and admin removal link.
+    $elements['#attached']['library'][] = 'wlt_bookshop/bookshop_featured';
+
     $count = 0;
     foreach ($items as $delta => $item) {
       if ($count >= $max) { break; }
@@ -89,17 +96,42 @@ class BookshopFeaturedFormatter extends FormatterBase {
       $ean = preg_replace('/\D+/', '', $raw);
       if ($ean === '') { continue; }
 
+      $container_id = 'wlt-bookshop-featured-' . $entity->id() . '-' . $delta;
+      $remove_token = $can_remove ? $token_service->get('wlt_bookshop:remove:' . $entity->id() . ':' . $ean) : '';
+
       $elements[$delta] = [
-        '#type' => 'html_tag',
-        '#tag' => 'script',
+        '#type' => 'container',
         '#attributes' => [
-          'src' => 'https://bookshop.org/widgets.js',
-          'data-type' => 'featured',
-          'data-full-info' => $full_info,
-          'data-affiliate-id' => $affiliate,
-          'data-sku' => $ean,
+          'id' => $container_id,
+          'class' => ['wlt-bookshop-featured-container'],
+          'data-isbn' => $ean,
+          'data-nid' => (string) $entity->id(),
+          'data-can-remove' => $can_remove ? '1' : '0',
+          'data-remove-token' => $remove_token,
         ],
-        // Ensure this renders even from cache; the external script handles UI.
+        'script' => [
+          '#type' => 'html_tag',
+          '#tag' => 'script',
+          '#attributes' => [
+            'src' => 'https://bookshop.org/widgets.js',
+            'data-type' => 'featured',
+            'data-full-info' => $full_info,
+            'data-affiliate-id' => $affiliate,
+            'data-sku' => $ean,
+          ],
+        ],
+        'actions' => $can_remove ? [
+          '#type' => 'container',
+          '#attributes' => ['class' => ['wlt-bookshop-featured-actions'], 'style' => 'display:none'],
+          'remove' => [
+            '#type' => 'link',
+            '#title' => $this->t('Remove invalid ISBN'),
+            '#url' => \Drupal\Core\Url::fromRoute('wlt_bookshop.remove_isbn', ['node' => $entity->id()], [
+              'query' => ['value' => $ean, 'token' => $remove_token],
+            ]),
+            '#attributes' => ['class' => ['wlt-bookshop-remove-link'], 'data-ajax' => '1'],
+          ],
+        ] : [],
         '#cache' => [
           'contexts' => $items->getEntity()->getCacheContexts(),
           'tags' => $items->getEntity()->getCacheTags(),
@@ -113,4 +145,3 @@ class BookshopFeaturedFormatter extends FormatterBase {
   }
 
 }
-
