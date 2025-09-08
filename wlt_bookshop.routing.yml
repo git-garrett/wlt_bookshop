@@ -10,7 +10,7 @@ wlt_bookshop.isbn_process:
 wlt_bookshop.report_page:
   path: '/admin/reports/wlt-bookshop'
   defaults:
-    _form: '\\Drupal\\wlt_bookshop\\Form\\ReportForm'
+    _form: '\Drupal\wlt_bookshop\Form\ReportForm'
     _title: 'WLT Bookshop report'
   requirements:
     _permission: 'access site reports'
@@ -19,7 +19,7 @@ wlt_bookshop.report_page:
 wlt_bookshop.report_bad_isbn:
   path: '/wlt-bookshop/report-bad-isbn/{node}'
   defaults:
-    _controller: '\\Drupal\\wlt_bookshop\\Controller\\IsbnAdminController::report'
+    _controller: '\Drupal\wlt_bookshop\Controller\IsbnAdminController::report'
   requirements:
     _access: 'TRUE'
   options:
