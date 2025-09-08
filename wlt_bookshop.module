@@ -53,12 +53,51 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
+  $candidate = NULL;
   if ($author) {
-    $isbn = $lookup->getIsbnByAuthor($author);
-    if ($isbn) {
-      return $isbn;
-    }
+    $candidate = $lookup->getIsbnByAuthor($author);
   }
-  // Fallback to a simple title-based lookup.
-  return $lookup->getIsbnByTitle($title);
+  if (!$candidate && $title !== '') {
+    $candidate = $lookup->getIsbnByTitle($title);
+  }
+  if (!$candidate) {
+    return NULL;
+  }
+  // Normalize separators and validate checksum for ISBN-10/13.
+  $raw = strtoupper(trim(preg_replace('/[\s\-]/', '', (string) $candidate)));
+  if ($raw === '') {
+    return NULL;
+  }
+  if (preg_match('/^\d{13}$/', $raw)) {
+    // Validate EAN-13 checksum.
+    $sum = 0;
+    for ($i = 0; $i < 12; $i++) {
+      $d = (int) $raw[$i];
+      $sum += ($i % 2 === 0) ? $d : 3 * $d;
+    }
+    $check = (10 - ($sum % 10)) % 10;
+    return ($check === (int) $raw[12]) ? $raw : NULL;
+  }
+  if (preg_match('/^\d{9}[\dX]$/', $raw)) {
+    // Validate ISBN-10 checksum; if valid, convert to ISBN-13 with 978 prefix.
+    $sum = 0;
+    for ($i = 0; $i < 9; $i++) {
+      $sum += ((int) $raw[$i]) * (10 - $i);
+    }
+    $last = $raw[9] === 'X' ? 10 : (int) $raw[9];
+    $sum += $last;
+    if (($sum % 11) !== 0) {
+      return NULL;
+    }
+    // Convert to 13-digit with 978 prefix and recompute check digit.
+    $base12 = '978' . substr($raw, 0, 9);
+    $sum13 = 0;
+    for ($i = 0; $i < 12; $i++) {
+      $d = (int) $base12[$i];
+      $sum13 += ($i % 2 === 0) ? $d : 3 * $d;
+    }
+    $check13 = (10 - ($sum13 % 10)) % 10;
+    return $base12 . (string) $check13;
+  }
+  return NULL;
 }

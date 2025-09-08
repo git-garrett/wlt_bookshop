@@ -127,8 +127,11 @@ class BookIsbnProcessForm extends FormBase {
         else {
           $list = method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a) : array_filter([(string) $lookup->getIsbnByAuthor($a)]);
         }
-        foreach ((array) $list as $isbn) {
-          $found[(string) $isbn] = TRUE;
+      foreach ((array) $list as $isbn) {
+          $norm = $this->normalizeIsbn((string) $isbn);
+          if ($norm !== NULL) {
+            $found[$norm] = TRUE;
+          }
         }
       }
 
@@ -242,8 +245,11 @@ class BookIsbnProcessForm extends FormBase {
         else {
           $list = method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a) : array_filter([(string) $lookup->getIsbnByAuthor($a)]);
         }
-        foreach ((array) $list as $isbn) {
-          $found[(string) $isbn] = TRUE;
+      foreach ((array) $list as $isbn) {
+          $norm = $this->normalizeIsbn((string) $isbn);
+          if ($norm !== NULL) {
+            $found[$norm] = TRUE;
+          }
         }
       }
       if (!empty($found)) {
@@ -357,6 +363,80 @@ class BookIsbnProcessForm extends FormBase {
     $text = strip_tags($text);
     $text = trim(preg_replace('/\s+/u', ' ', $text));
     return $text;
+  }
+
+  /**
+   * Normalize and validate ISBN value.
+   *
+   * Keeps only digits and returns the digit string if length is 10 or 13.
+   * Returns NULL otherwise.
+   */
+  protected function normalizeIsbn(string $value): ?string {
+    if ($value === '') {
+      return NULL;
+    }
+    // Remove common separators and uppercase.
+    $raw = strtoupper(trim(preg_replace('/[\s\-]/', '', $value)));
+    if ($raw === '') {
+      return NULL;
+    }
+    // ISBN-13: 13 digits, valid EAN checksum.
+    if (preg_match('/^\d{13}$/', $raw)) {
+      return $this->isValidIsbn13($raw) ? $raw : NULL;
+    }
+    // ISBN-10: 9 digits + (digit or X) check digit. Convert to ISBN-13.
+    if (preg_match('/^\d{9}[\dX]$/', $raw)) {
+      if ($this->isValidIsbn10($raw)) {
+        return $this->isbn10ToIsbn13($raw);
+      }
+      return NULL;
+    }
+    return NULL;
+  }
+
+  protected function isValidIsbn13(string $isbn13): bool {
+    // EAN-13 checksum: sum of digits with alternating weights 1 and 3.
+    if (!preg_match('/^\d{13}$/', $isbn13)) {
+      return FALSE;
+    }
+    $sum = 0;
+    for ($i = 0; $i < 12; $i++) {
+      $d = (int) $isbn13[$i];
+      $sum += ($i % 2 === 0) ? $d : 3 * $d;
+    }
+    $check = (10 - ($sum % 10)) % 10;
+    return $check === (int) $isbn13[12];
+  }
+
+  protected function isValidIsbn10(string $isbn10): bool {
+    // ISBN-10 checksum: sum_{i=1..10} (digit_i * (11 - i)) % 11 == 0; X represents 10.
+    if (!preg_match('/^\d{9}[\dX]$/', $isbn10)) {
+      return FALSE;
+    }
+    $sum = 0;
+    for ($i = 0; $i < 9; $i++) {
+      $sum += ((int) $isbn10[$i]) * (10 - $i);
+    }
+    $last = $isbn10[9] === 'X' ? 10 : (int) $isbn10[9];
+    $sum += $last;
+    return ($sum % 11) === 0;
+  }
+
+  /**
+   * Convert a valid ISBN-10 to ISBN-13 using 978 prefix and recomputed check.
+   */
+  protected function isbn10ToIsbn13(string $isbn10): string {
+    // Assumes format \d{9}[\dX] and valid checksum.
+    $core9 = substr($isbn10, 0, 9);
+    $base12 = '978' . $core9;
+    // Compute ISBN-13 check for first 12 digits.
+    $sum = 0;
+    for ($i = 0; $i < 12; $i++) {
+      $d = (int) $base12[$i];
+      $sum += ($i % 2 === 0) ? $d : 3 * $d;
+    }
+    $check = (10 - ($sum % 10)) % 10;
+    return $base12 . (string) $check;
   }
 
   /**
