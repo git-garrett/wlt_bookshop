@@ -7,6 +7,25 @@ wlt_bookshop.isbn_process:
     _permission: 'administer nodes'
   options:
     _admin_route: TRUE
+wlt_bookshop.report_page:
+  path: '/admin/reports/wlt-bookshop'
+  defaults:
+    _form: '\\Drupal\\wlt_bookshop\\Form\\ReportForm'
+    _title: 'WLT Bookshop report'
+  requirements:
+    _permission: 'access site reports'
+  options:
+    _admin_route: TRUE
+wlt_bookshop.report_bad_isbn:
+  path: '/wlt-bookshop/report-bad-isbn/{node}'
+  defaults:
+    _controller: '\\Drupal\\wlt_bookshop\\Controller\\IsbnAdminController::report'
+  requirements:
+    _access: 'TRUE'
+  options:
+    parameters:
+      node:
+        type: entity:node
 wlt_bookshop.remove_isbn:
   path: '/wlt-bookshop/remove-isbn/{node}'
   defaults:

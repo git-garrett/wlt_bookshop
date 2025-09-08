@@ -47,5 +47,22 @@ class IsbnAdminController extends ControllerBase {
 
     return new JsonResponse(['ok' => true, 'removed' => $removed]);
   }
-}
 
+  public function report(Request $request, NodeInterface $node): JsonResponse {
+    $value = (string) $request->query->get('value');
+    $token = (string) $request->query->get('token');
+    if ($value === '') {
+      return new JsonResponse(['ok' => false, 'error' => 'missing value'], 400);
+    }
+    $expected = 'wlt_bookshop:report:' . $node->id() . ':' . $value;
+    if (!$this->csrfToken()->validate($token, $expected)) {
+      return new JsonResponse(['ok' => false, 'error' => 'invalid token'], 400);
+    }
+
+    $key = 'nid:' . $node->id() . ':isbn:' . $value;
+    $expire = \\Drupal::time()->getRequestTime() + 60 * 60 * 24 * 30; // 30 days.
+    \\Drupal::cache('wlt_bookshop_bad_isbn')->set($key, TRUE, $expire);
+    \\Drupal::logger('wlt_bookshop')->notice('Suppressed ISBN @isbn for node @nid for 30 days.', ['@isbn' => $value, '@nid' => $node->id()]);
+    return new JsonResponse(['ok' => true, 'suppressed_until' => $expire]);
+  }
+}

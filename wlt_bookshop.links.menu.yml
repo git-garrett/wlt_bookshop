@@ -4,4 +4,9 @@ wlt_bookshop.isbn_process_link:
   route_name: wlt_bookshop.isbn_process
   parent: system.admin_content
   weight: 100
-
+wlt_bookshop.report_menu_link:
+  title: 'WLT Bookshop'
+  description: 'Suppression and widget diagnostics.'
+  route_name: wlt_bookshop.report_page
+  parent: system.admin_reports
+  weight: 100

@@ -5,10 +5,9 @@
     attach: function (context) {
       $('.wlt-bookshop-featured-container', context).once('wlt-bookshop-featured').each(function () {
         const $container = $(this);
-        const canRemove = $container.data('can-remove') === 1 || $container.data('can-remove') === '1';
         const nid = $container.data('nid');
         const isbn = $container.data('isbn');
-        const token = $container.data('remove-token');
+        const token = $container.data('report-token');
 
         // After a delay, if no iframe or zero-height iframe, hide.
         setTimeout(function () {
@@ -26,27 +25,12 @@
 
           if (broken) {
             $container.hide();
-
-            if (canRemove && nid && isbn && token) {
-              const $actions = $container.find('.wlt-bookshop-featured-actions');
-              if ($actions.length) {
-                $actions.show();
-              }
-              // Bind click to remove link to call backend and then remove container.
-              $container.find('.wlt-bookshop-remove-link').on('click', function (e) {
-                e.preventDefault();
-                const url = $(this).attr('href');
-                $.ajax({
-                  url: url,
-                  method: 'POST',
-                  dataType: 'json',
-                  success: function (res) {
-                    // Remove container on success.
-                    if (res && res.removed) {
-                      $container.remove();
-                    }
-                  }
-                });
+            // Report bad ISBN silently so it can be suppressed for 30 days.
+            if (nid && isbn && token) {
+              $.ajax({
+                url: Drupal.url('wlt-bookshop/report-bad-isbn/' + nid) + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token),
+                method: 'POST',
+                dataType: 'json'
               });
             }
           }
@@ -55,4 +39,3 @@
     }
   };
 })(jQuery, Drupal);
-

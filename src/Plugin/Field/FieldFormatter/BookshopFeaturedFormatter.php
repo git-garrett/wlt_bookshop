@@ -83,7 +83,6 @@ class BookshopFeaturedFormatter extends FormatterBase {
     if ($max < 1) { $max = 1; }
 
     $entity = $items->getEntity();
-    $can_remove = $entity->access('update');
     $token_service = \Drupal::service('csrf_token');
 
     // Attach JS to handle hiding broken widgets and admin removal link.
@@ -96,8 +95,15 @@ class BookshopFeaturedFormatter extends FormatterBase {
       $ean = preg_replace('/\D+/', '', $raw);
       if ($ean === '') { continue; }
 
+      // Skip rendering if this ISBN was recently reported as invalid.
+      $suppress_key = 'nid:' . $entity->id() . ':isbn:' . $ean;
+      $suppressed = \Drupal::cache('wlt_bookshop_bad_isbn')->get($suppress_key);
+      if ($suppressed) {
+        continue;
+      }
+
       $container_id = 'wlt-bookshop-featured-' . $entity->id() . '-' . $delta;
-      $remove_token = $can_remove ? $token_service->get('wlt_bookshop:remove:' . $entity->id() . ':' . $ean) : '';
+      $report_token = $token_service->get('wlt_bookshop:report:' . $entity->id() . ':' . $ean);
 
       $elements[$delta] = [
         '#type' => 'container',
@@ -106,8 +112,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
           'class' => ['wlt-bookshop-featured-container'],
           'data-isbn' => $ean,
           'data-nid' => (string) $entity->id(),
-          'data-can-remove' => $can_remove ? '1' : '0',
-          'data-remove-token' => $remove_token,
+          'data-report-token' => $report_token,
         ],
         'script' => [
           '#type' => 'html_tag',
@@ -120,18 +125,6 @@ class BookshopFeaturedFormatter extends FormatterBase {
             'data-sku' => $ean,
           ],
         ],
-        'actions' => $can_remove ? [
-          '#type' => 'container',
-          '#attributes' => ['class' => ['wlt-bookshop-featured-actions'], 'style' => 'display:none'],
-          'remove' => [
-            '#type' => 'link',
-            '#title' => $this->t('Remove invalid ISBN'),
-            '#url' => \Drupal\Core\Url::fromRoute('wlt_bookshop.remove_isbn', ['node' => $entity->id()], [
-              'query' => ['value' => $ean, 'token' => $remove_token],
-            ]),
-            '#attributes' => ['class' => ['wlt-bookshop-remove-link'], 'data-ajax' => '1'],
-          ],
-        ] : [],
         '#cache' => [
           'contexts' => $items->getEntity()->getCacheContexts(),
           'tags' => $items->getEntity()->getCacheTags(),
