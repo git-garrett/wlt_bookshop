@@ -53,9 +53,12 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
-  if (method_exists($lookup, 'getEansByTitleAuthor')) {
-    $list = $lookup->getEansByTitleAuthor($title, $author ? [$author] : []);
-    return $list[0] ?? NULL;
+  if ($author) {
+    $isbn = $lookup->getIsbnByAuthor($author);
+    if ($isbn) {
+      return $isbn;
+    }
   }
-  return NULL;
+  // Fallback to a simple title-based lookup.
+  return $lookup->getIsbnByTitle($title);
 }
