@@ -7,3 +7,10 @@ services:
   logger.channel.wlt_bookshop:
     parent: 'logger.channel_base'
     arguments: ['wlt_bookshop']
+
+  cache.wlt_bookshop_bad_isbn:
+    class: 'Drupal\\Core\\Cache\\CacheBackendInterface'
+    factory: ['@cache.factory', 'get']
+    arguments: ['wlt_bookshop_bad_isbn']
+    tags:
+      - { name: cache.bin }
