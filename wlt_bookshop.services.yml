@@ -10,7 +10,7 @@ services:
 
   cache.wlt_bookshop_bad_isbn:
     class: Drupal\Core\Cache\CacheBackendInterface
-    factory: ['@cache.factory', get]
-    arguments: [wlt_bookshop_bad_isbn]
+    factory: cache_factory:get
+    arguments: ['wlt_bookshop_bad_isbn']
     tags:
       - { name: cache.bin }
