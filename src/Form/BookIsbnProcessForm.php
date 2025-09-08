@@ -198,8 +198,7 @@ class BookIsbnProcessForm extends FormBase {
 
       if ($debugEnabled) {
         $savedIsbns = array_keys($existing);
-        $debugSummaryInfo = (is_array($debugInfo) && !empty($debugInfo)) ? reset($debugInfo) : [];
-        $summary = $this->formatDebugSummary($specific_nid, trim($title . ' ' . implode(', ', $authors)), $debugSummaryInfo, $savedIsbns);
+        $summary = $this->formatDebugSummary($specific_nid, $title, $authors, is_array($debugInfo) ? $debugInfo : [], $savedIsbns);
         $form_state->set('debug_output', $summary);
         $form_state->setRebuild(TRUE);
       }
@@ -298,7 +297,7 @@ class BookIsbnProcessForm extends FormBase {
 
       if ($debugEnabled) {
         $savedIsbns = isset($items) ? array_map(function($i) { return $i['value']; }, $items) : [];
-        $debugCombined .= $this->formatDebugSummary($node->id(), trim($title . ' ' . implode(', ', $authors)), $debugInfo, $savedIsbns) . "\n\n";
+        $debugCombined .= $this->formatDebugSummary($node->id(), $title, $authors, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
       }
     }
 
@@ -366,10 +365,23 @@ class BookIsbnProcessForm extends FormBase {
   /**
    * Format debug details into a readable text block.
    */
-  protected function formatDebugSummary(int $nid, string $author, array $debugInfo, array $savedIsbns): string {
+  protected function formatDebugSummary(int $nid, string $title, array $authors, array $debugInfo, array $savedIsbns): string {
     $lines = [];
     $lines[] = 'Node NID: ' . $nid;
-    $lines[] = 'Author: ' . $author;
+    $lines[] = 'Title: ' . $title;
+    $lines[] = 'Authors: ' . (empty($authors) ? '-' : implode(', ', $authors));
+    // Show the exact keywords used for Bookshop search when available.
+    $keywords = '';
+    if (!empty($debugInfo['bookshop']['query']['keywords'])) {
+      $keywords = (string) $debugInfo['bookshop']['query']['keywords'];
+    }
+    else {
+      $kwParts = [];
+      if ($title !== '') { $kwParts[] = $title; }
+      if (!empty($authors)) { $kwParts[] = implode(' ', $authors); }
+      $keywords = implode(' ', $kwParts);
+    }
+    $lines[] = 'Search keywords: ' . $keywords;
     if (!empty($debugInfo['search'])) {
       $s = $debugInfo['search'];
       $lines[] = 'Search URL: ' . ($s['url'] ?? '');
@@ -384,6 +396,25 @@ class BookIsbnProcessForm extends FormBase {
       }
       if (isset($s['error'])) {
         $lines[] = 'Search error: ' . $s['error'];
+      }
+    }
+    if (!empty($debugInfo['bookshop'])) {
+      $b = $debugInfo['bookshop'];
+      $lines[] = 'Bookshop URL: ' . ($b['url'] ?? '');
+      if (!empty($b['query'])) {
+        $lines[] = 'Bookshop query: ' . json_encode($b['query']);
+      }
+      if (!empty($b['links'])) {
+        $lines[] = 'Bookshop links: ' . implode(', ', (array) $b['links']);
+      }
+      if (!empty($b['eans'])) {
+        $lines[] = 'Bookshop EANs: ' . implode(', ', (array) $b['eans']);
+      }
+      if (!empty($b['status'])) {
+        $lines[] = 'Bookshop status: ' . $b['status'];
+      }
+      if (!empty($b['error'])) {
+        $lines[] = 'Bookshop error: ' . $b['error'];
       }
     }
     if (!empty($debugInfo['candidate_edition_keys'])) {
