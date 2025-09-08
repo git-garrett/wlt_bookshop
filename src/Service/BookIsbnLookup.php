@@ -5,6 +5,7 @@ namespace Drupal\wlt_bookshop\Service;
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
 use Drupal\Component\Utility\Unicode;
+use Drupal\Component\Utility\Html;
 
 /**
  * Service to look up ISBNs using the Open Library API.
@@ -520,8 +521,8 @@ class BookIsbnLookup {
    *   Unique EAN-13 values found, in discovery order.
    */
   public function getEansByTitleAuthor(string $title, array $authors = [], ?array &$debug = NULL): array {
-    $title = trim($title);
-    $authors = array_values(array_filter(array_map('trim', $authors), static function($v){ return $v !== ''; }));
+    $title = $this->sanitizePlain($title);
+    $authors = array_values(array_filter(array_map(function ($v) { return $this->sanitizePlain($v); }, $authors), static function($v){ return $v !== ''; }));
     if ($title === '' && empty($authors)) {
       return [];
     }
@@ -583,6 +584,18 @@ class BookIsbnLookup {
       $debug['bookshop']['eans'] = array_keys($eans);
     }
     return array_keys($eans);
+  }
+
+  /**
+   * Convert HTML-ish input to a plain text search string.
+   */
+  protected function sanitizePlain(string $text): string {
+    if ($text === '') { return ''; }
+    // Decode HTML entities, strip tags, collapse whitespace.
+    $text = Html::decodeEntities($text);
+    $text = strip_tags($text);
+    $text = trim(preg_replace('/\s+/u', ' ', $text));
+    return $text;
   }
 
   /**

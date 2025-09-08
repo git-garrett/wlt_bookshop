@@ -331,7 +331,7 @@ class BookIsbnProcessForm extends FormBase {
     foreach ($node->get('field_author') as $item) {
       // For entity reference, use the referenced entity label.
       if (isset($item->entity) && $item->entity) {
-        $label = trim((string) $item->entity->label());
+        $label = $this->sanitizeText((string) $item->entity->label());
         if ($label !== '') {
           $names[$label] = TRUE;
           continue;
@@ -339,7 +339,7 @@ class BookIsbnProcessForm extends FormBase {
       }
       // For non-entity fields (e.g., text), fall back to value.
       if (isset($item->value)) {
-        $val = trim((string) $item->value);
+        $val = $this->sanitizeText((string) $item->value);
         if ($val !== '') {
           $names[$val] = TRUE;
         }
@@ -354,12 +354,24 @@ class BookIsbnProcessForm extends FormBase {
    */
   protected function getSearchTitle(NodeInterface $node): string {
     if ($node->hasField('field_sidebartitle')) {
-      $val = trim((string) $node->get('field_sidebartitle')->value);
+      $val = $this->sanitizeText((string) $node->get('field_sidebartitle')->value);
       if ($val !== '') {
         return $val;
       }
     }
-    return trim((string) $node->label());
+    return $this->sanitizeText((string) $node->label());
+  }
+
+  /**
+   * Strip HTML and normalize whitespace in user-provided text.
+   */
+  protected function sanitizeText(string $text): string {
+    if ($text === '') { return ''; }
+    // Decode entities, remove tags, collapse whitespace.
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $text = strip_tags($text);
+    $text = trim(preg_replace('/\s+/u', ' ', $text));
+    return $text;
   }
 
   /**
