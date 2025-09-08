@@ -4,6 +4,7 @@ namespace Drupal\wlt_bookshop\Service;
 
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
+use Drupal\Component\Utility\Unicode;
 
 /**
  * Service to look up ISBNs using the Open Library API.
@@ -501,5 +502,147 @@ class BookIsbnLookup {
     return $all;
   }
 
-}
+  /**
+   * Get EANs by searching Bookshop.org with title + author keywords.
+   *
+   * Builds https://bookshop.org/books?keywords={urlencoded(title + authors)}
+   * Fetches HTML, finds first 3 product links (href starts with /p/books/),
+   * then extracts EANs from href via query param `ean` or 13-digit segments.
+   *
+   * @param string $title
+   *   The book title string.
+   * @param string[] $authors
+   *   One or more author names.
+   * @param array|null $debug
+   *   Optional debug container (by ref) to collect request/parse details.
+   *
+   * @return string[]
+   *   Unique EAN-13 values found, in discovery order.
+   */
+  public function getEansByTitleAuthor(string $title, array $authors = [], ?array &$debug = NULL): array {
+    $title = trim($title);
+    $authors = array_values(array_filter(array_map('trim', $authors), static function($v){ return $v !== ''; }));
+    if ($title === '' && empty($authors)) {
+      return [];
+    }
 
+    $keywords = trim($title . ' ' . implode(' ', $authors));
+    $url = 'https://bookshop.org/books';
+    $query = ['keywords' => $keywords];
+
+    if (is_array($debug)) {
+      $debug['bookshop'] = [
+        'url' => $url,
+        'query' => $query,
+      ];
+    }
+
+    try {
+      $response = $this->httpClient->request('GET', $url, [
+        'query' => $query,
+        'timeout' => 10,
+        'connect_timeout' => 5,
+        'headers' => [
+          'User-Agent' => 'Drupal-wlt_bookshop/1.0 (+https://example.com) PHP',
+          'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        ],
+      ]);
+    }
+    catch (\Throwable $e) {
+      $this->logger->warning('Bookshop search failed for "@kw": @message', [
+        '@kw' => $keywords,
+        '@message' => $e->getMessage(),
+      ]);
+      if (is_array($debug)) {
+        $debug['bookshop']['error'] = $e->getMessage();
+      }
+      return [];
+    }
+
+    if ($response->getStatusCode() !== 200) {
+      $this->logger->warning('Bookshop search non-200 (@code) for "@kw"', [
+        '@code' => $response->getStatusCode(),
+        '@kw' => $keywords,
+      ]);
+      if (is_array($debug)) {
+        $debug['bookshop']['status'] = $response->getStatusCode();
+      }
+      return [];
+    }
+
+    $html = (string) $response->getBody();
+    $hrefs = $this->extractBookshopProductLinks($html, 3);
+    $eans = [];
+    foreach ($hrefs as $href) {
+      foreach ($this->extractEansFromHref($href) as $ean) {
+        $eans[$ean] = TRUE;
+      }
+    }
+    if (is_array($debug)) {
+      $debug['bookshop']['links'] = $hrefs;
+      $debug['bookshop']['eans'] = array_keys($eans);
+    }
+    return array_keys($eans);
+  }
+
+  /**
+   * Extract the first N product links from Bookshop HTML.
+   *
+   * @param string $html
+   * @param int $limit
+   * @return string[] Relative hrefs like /p/books/.../12345?ean=978...
+   */
+  protected function extractBookshopProductLinks(string $html, int $limit = 3): array {
+    $hrefs = [];
+    if ($html === '') { return $hrefs; }
+    // Use DOM parsing to find anchors starting with /p/books/
+    $dom = new \DOMDocument();
+    // Suppress warnings from malformed HTML.
+    @$dom->loadHTML($html);
+    $xpath = new \DOMXPath($dom);
+    $nodes = $xpath->query('//a[starts-with(@href, "/p/books/")]/@href');
+    if ($nodes) {
+      foreach ($nodes as $attr) {
+        $href = (string) $attr->nodeValue;
+        if ($href !== '') {
+          $hrefs[] = $href;
+          if (count($hrefs) >= $limit) { break; }
+        }
+      }
+    }
+    return $hrefs;
+  }
+
+  /**
+   * Extract EANs from a Bookshop product href.
+   *
+   * Parses query param `ean` if present; otherwise, looks for 13-digit tokens
+   * in the path segments.
+   *
+   * @param string $href
+   * @return string[] EAN-13 values.
+   */
+  protected function extractEansFromHref(string $href): array {
+    $out = [];
+    $parts = @parse_url($href);
+    if (!empty($parts['query'])) {
+      parse_str($parts['query'], $qs);
+      if (!empty($qs['ean'])) {
+        $ean = preg_replace('/\D+/', '', (string) $qs['ean']);
+        if ($ean !== '' && strlen($ean) >= 12) {
+          $out[$ean] = TRUE;
+        }
+      }
+    }
+    if (!empty($parts['path'])) {
+      // Find 13-digit sequences in the path.
+      if (preg_match_all('/(^|\D)(\d{13})(?=\D|$)/', $parts['path'], $m)) {
+        foreach ($m[2] as $ean) {
+          $out[$ean] = TRUE;
+        }
+      }
+    }
+    return array_keys($out);
+  }
+
+}

@@ -107,48 +107,45 @@ class BookIsbnProcessForm extends FormBase {
         return;
       }
       $authors = $this->getAuthorNames($node);
-      if (empty($authors)) {
-        $this->messenger()->addStatus($this->t('Node @nid has no author names resolved from field_author.', ['@nid' => $specific_nid]));
+      $title = $this->getSearchTitle($node);
+      if ($title === '' && empty($authors)) {
+        $this->messenger()->addStatus($this->t('Node @nid has no usable title/author to search.', ['@nid' => $specific_nid]));
         return;
       }
 
       // Collect all ISBNs from service and append missing to field.
       $found = [];
-      if (method_exists($lookup, 'getIsbnsByAuthor')) {
-        $debugInfo = [];
-        foreach ($authors as $author) {
-          $author = trim($author);
-          if ($author === '') { continue; }
-          if ($debugEnabled) {
-            $tmp = [];
-            $list = $lookup->getIsbnsByAuthor($author, $tmp);
-            // Merge debug for visibility; keep last per-author.
-            $debugInfo[$author] = $tmp;
-          }
-          else {
-            $list = $lookup->getIsbnsByAuthor($author);
-          }
-          foreach ((array) $list as $isbn) {
-            $found[(string) $isbn] = TRUE;
-          }
+      // Use Bookshop search by title + authors to get EANs.
+      $debugInfo = [];
+      if (method_exists($lookup, 'getEansByTitleAuthor')) {
+        if ($debugEnabled) {
+          $foundList = $lookup->getEansByTitleAuthor($title, $authors, $debugInfo);
+        }
+        else {
+          $foundList = $lookup->getEansByTitleAuthor($title, $authors);
         }
       }
       else {
-        // Backwards fallback: single ISBN method.
-        $debugInfo = [];
-        foreach ($authors as $author) {
-          if ($debugEnabled) {
-            $tmp = [];
-            $single = $lookup->getIsbnByAuthor($author, $tmp);
-            $debugInfo[$author] = $tmp;
+        // Fallback: try author-only OpenLibrary flow if the method is missing.
+        if ($debugEnabled) {
+          $tmp = [];
+          $foundList = [];
+          foreach ($authors as $a) {
+            $list = method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a, $tmp) : array_filter([(string) $lookup->getIsbnByAuthor($a, $tmp)]);
+            $foundList = array_merge($foundList, $list);
           }
-          else {
-            $single = $lookup->getIsbnByAuthor($author);
-          }
-          if ($single) {
-            $found[(string) $single] = TRUE;
+          $debugInfo = $tmp;
+        }
+        else {
+          $foundList = [];
+          foreach ($authors as $a) {
+            $list = method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a) : array_filter([(string) $lookup->getIsbnByAuthor($a)]);
+            $foundList = array_merge($foundList, $list);
           }
         }
+      }
+      foreach ((array) $foundList as $isbn) {
+        $found[(string) $isbn] = TRUE;
       }
 
       // Merge with existing values, dedupe.
@@ -202,7 +199,7 @@ class BookIsbnProcessForm extends FormBase {
       if ($debugEnabled) {
         $savedIsbns = array_keys($existing);
         $debugSummaryInfo = (is_array($debugInfo) && !empty($debugInfo)) ? reset($debugInfo) : [];
-        $summary = $this->formatDebugSummary($specific_nid, implode(', ', $authors), $debugSummaryInfo, $savedIsbns);
+        $summary = $this->formatDebugSummary($specific_nid, trim($title . ' ' . implode(', ', $authors)), $debugSummaryInfo, $savedIsbns);
         $form_state->set('debug_output', $summary);
         $form_state->setRebuild(TRUE);
       }
@@ -242,44 +239,29 @@ class BookIsbnProcessForm extends FormBase {
         continue;
       }
       $authors = $this->getAuthorNames($node);
-      if (empty($authors)) {
+      $title = $this->getSearchTitle($node);
+      if ($title === '' && empty($authors)) {
         continue;
       }
 
       // Gather all ISBNs and set multi-value field with de-duplication.
       $found = [];
       $debugInfo = [];
-      if (method_exists($lookup, 'getIsbnsByAuthor')) {
-        foreach ($authors as $author) {
-          $author = trim($author);
-          if ($author === '') { continue; }
-          if ($debugEnabled) {
-            $tmp = [];
-            $list = $lookup->getIsbnsByAuthor($author, $tmp);
-            $debugInfo[$author] = $tmp;
-          }
-          else {
-            $list = $lookup->getIsbnsByAuthor($author);
-          }
-          foreach ((array) $list as $isbn) {
-            $found[(string) $isbn] = TRUE;
-          }
-        }
+      if (method_exists($lookup, 'getEansByTitleAuthor')) {
+        $foundList = $debugEnabled ? $lookup->getEansByTitleAuthor($title, $authors, $debugInfo) : $lookup->getEansByTitleAuthor($title, $authors);
       }
       else {
-        foreach ($authors as $author) {
-          if ($debugEnabled) {
-            $tmp = [];
-            $single = $lookup->getIsbnByAuthor($author, $tmp);
-            $debugInfo[$author] = $tmp;
-          }
-          else {
-            $single = $lookup->getIsbnByAuthor($author);
-          }
-          if ($single) {
-            $found[(string) $single] = TRUE;
-          }
+        // Fallback to author-only flow when new method is missing.
+        $foundList = [];
+        foreach ($authors as $a) {
+          $list = $debugEnabled
+            ? (method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a, $debugInfo) : array_filter([(string) $lookup->getIsbnByAuthor($a, $debugInfo)]))
+            : (method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a) : array_filter([(string) $lookup->getIsbnByAuthor($a)]));
+          $foundList = array_merge($foundList, $list);
         }
+      }
+      foreach ((array) $foundList as $isbn) {
+        $found[(string) $isbn] = TRUE;
       }
       if (!empty($found)) {
         // Existing values (if any) are not expected here due to query, but handle anyway.
@@ -316,8 +298,7 @@ class BookIsbnProcessForm extends FormBase {
 
       if ($debugEnabled) {
         $savedIsbns = isset($items) ? array_map(function($i) { return $i['value']; }, $items) : [];
-        $debugSummaryInfo = (is_array($debugInfo) && !empty($debugInfo)) ? reset($debugInfo) : [];
-        $debugCombined .= $this->formatDebugSummary($node->id(), implode(', ', $authors), $debugSummaryInfo, $savedIsbns) . "\n\n";
+        $debugCombined .= $this->formatDebugSummary($node->id(), trim($title . ' ' . implode(', ', $authors)), $debugInfo, $savedIsbns) . "\n\n";
       }
     }
 
@@ -366,6 +347,20 @@ class BookIsbnProcessForm extends FormBase {
       }
     }
     return array_keys($names);
+  }
+
+  /**
+   * Resolve a title string for search.
+   * Prefers custom field `field_sidebartitle`, falls back to node label().
+   */
+  protected function getSearchTitle(NodeInterface $node): string {
+    if ($node->hasField('field_sidebartitle')) {
+      $val = trim((string) $node->get('field_sidebartitle')->value);
+      if ($val !== '') {
+        return $val;
+      }
+    }
+    return trim((string) $node->label());
   }
 
   /**

@@ -28,24 +28,34 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
   if ($node->bundle() !== 'book_review') {
     return NULL;
   }
-  if (!$node->hasField('field_author') || $node->get('field_author')->isEmpty()) {
-    return NULL;
+  // Resolve title and first author for a simple single-value helper.
+  $title = '';
+  if ($node->hasField('field_sidebartitle')) {
+    $title = trim((string) $node->get('field_sidebartitle')->value);
   }
-  // Attempt to resolve an author name from entity reference or value.
+  if ($title === '') {
+    $title = (string) $node->label();
+  }
   $author = NULL;
-  foreach ($node->get('field_author') as $item) {
-    if (isset($item->entity) && $item->entity) {
-      $label = trim((string) $item->entity->label());
-      if ($label !== '') { $author = $label; break; }
-    }
-    if (isset($item->value)) {
-      $val = trim((string) $item->value);
-      if ($val !== '') { $author = $val; break; }
+  if ($node->hasField('field_author') && !$node->get('field_author')->isEmpty()) {
+    foreach ($node->get('field_author') as $item) {
+      if (isset($item->entity) && $item->entity) {
+        $label = trim((string) $item->entity->label());
+        if ($label !== '') { $author = $label; break; }
+      }
+      if (isset($item->value)) {
+        $val = trim((string) $item->value);
+        if ($val !== '') { $author = $val; break; }
+      }
     }
   }
-  if (!$author) { return NULL; }
+  if ($title === '' && !$author) { return NULL; }
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
-  return $lookup->getIsbnByAuthor($author);
+  if (method_exists($lookup, 'getEansByTitleAuthor')) {
+    $list = $lookup->getEansByTitleAuthor($title, $author ? [$author] : []);
+    return $list[0] ?? NULL;
+  }
+  return NULL;
 }
