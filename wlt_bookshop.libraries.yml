@@ -2,8 +2,10 @@ bookshop_featured:
   version: 1.x
   js:
     js/bookshop_featured.js: {}
+  css:
+    theme:
+      css/bookshop_featured.css: {}
   dependencies:
     - core/drupal
     - core/drupal.ajax
     - core/jquery
-

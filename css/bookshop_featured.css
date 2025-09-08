@@ -1,0 +1,16 @@
+/* Layout featured book widgets in rows of three. */
+.field--name-field-isbn .field__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px; /* space between widgets */
+}
+
+.field--name-field-isbn .field__item {
+  flex: 0 0 225px; /* widget width from Bookshop iframe */
+}
+
+/* Ensure our inner container doesn't stretch oddly. */
+.field--name-field-isbn .wlt-bookshop-featured-container {
+  width: 225px;
+}
+
