@@ -60,9 +60,9 @@ class IsbnAdminController extends ControllerBase {
     }
 
     $key = 'nid:' . $node->id() . ':isbn:' . $value;
-    $expire = \\Drupal::time()->getRequestTime() + 60 * 60 * 24 * 30; // 30 days.
-    \\Drupal::cache('wlt_bookshop_bad_isbn')->set($key, TRUE, $expire);
-    \\Drupal::logger('wlt_bookshop')->notice('Suppressed ISBN @isbn for node @nid for 30 days.', ['@isbn' => $value, '@nid' => $node->id()]);
+    $expire = \Drupal::time()->getRequestTime() + 60 * 60 * 24 * 30; // 30 days.
+    \Drupal::cache('wlt_bookshop_bad_isbn')->set($key, TRUE, $expire);
+    \Drupal::logger('wlt_bookshop')->notice('Suppressed ISBN @isbn for node @nid for 30 days.', ['@isbn' => $value, '@nid' => $node->id()]);
     return new JsonResponse(['ok' => true, 'suppressed_until' => $expire]);
   }
 }
