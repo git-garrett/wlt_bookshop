@@ -7,6 +7,3 @@ bookshop_featured:
       css/bookshop_featured.css: {}
   dependencies:
     - core/drupal
-    - core/drupal.ajax
-    - core/jquery
-    - core/jquery.once
