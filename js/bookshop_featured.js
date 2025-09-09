@@ -103,9 +103,37 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', runChecks);
+    document.addEventListener('DOMContentLoaded', function () {
+      // Inject a small floating button to manually re-run checks.
+      injectRunner();
+      // Delay initial run by 10s to allow widgets to inject iframes.
+      setTimeout(runChecks, 10000);
+    });
   } else {
-    setTimeout(runChecks, 0);
+    injectRunner();
+    setTimeout(runChecks, 10000);
+  }
+
+  function injectRunner() {
+    if (document.getElementById('bookshop-checker-run')) return;
+    var btn = document.createElement('button');
+    btn.id = 'bookshop-checker-run';
+    btn.type = 'button';
+    btn.textContent = 'Run Bookshop Checks';
+    btn.style.position = 'fixed';
+    btn.style.bottom = '16px';
+    btn.style.right = '16px';
+    btn.style.zIndex = '99999';
+    btn.style.padding = '8px 12px';
+    btn.style.background = '#1f2937';
+    btn.style.color = '#e5e7eb';
+    btn.style.border = '1px solid #374151';
+    btn.style.borderRadius = '6px';
+    btn.style.cursor = 'pointer';
+    btn.addEventListener('click', function () {
+      console.log('[Bookshop checker] Manual run triggered');
+      runChecks();
+    });
+    document.body.appendChild(btn);
   }
 })();
-
