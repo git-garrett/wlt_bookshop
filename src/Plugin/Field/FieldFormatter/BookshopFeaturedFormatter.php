@@ -133,22 +133,24 @@ class BookshopFeaturedFormatter extends FormatterBase {
           '#value' => Markup::create(
             "(function(){\n" .
             "  var c=document.getElementById('" . $container_id . "'); if(!c) return;\n" .
-            "  setTimeout(function(){\n" .
-            "    var nid=c.getAttribute('data-nid')||'';\n" .
-            "    var isbn=c.getAttribute('data-isbn')||'';\n" .
-            "    var token=c.getAttribute('data-report-token')||'';\n" .
-            "    var ifr=c.getElementsByTagName('iframe'); if(!ifr.length) return;\n" .
+            "  var nid=c.getAttribute('data-nid')||'';\n" .
+            "  var isbn=c.getAttribute('data-isbn')||'';\n" .
+            "  var token=c.getAttribute('data-report-token')||'';\n" .
+            "  function report(){ try{ var base=(typeof Drupal!=='undefined'&&Drupal.url)?Drupal.url('wlt-bookshop/report-bad-isbn/'+nid):('/wlt-bookshop/report-bad-isbn/'+nid); fetch(base+'?value='+encodeURIComponent(isbn)+'&token='+encodeURIComponent(token),{method:'POST',credentials:'same-origin'});}catch(e){} }\n" .
+            "  function run(){\n" .
+            "    console.log('[Bookshop inline] Checking container id='+c.id+' isbn='+isbn);\n" .
+            "    var ifr=c.getElementsByTagName('iframe'); if(!ifr.length){ console.log('[Bookshop inline] No iframes yet'); return; }\n" .
             "    var anyOk=false, pending=ifr.length;\n" .
-            "    function report(){ try{ var base=(typeof Drupal!=='undefined'&&Drupal.url)?Drupal.url('wlt-bookshop/report-bad-isbn/'+nid):('/wlt-bookshop/report-bad-isbn/'+nid); fetch(base+'?value='+encodeURIComponent(isbn)+'&token='+encodeURIComponent(token),{method:'POST',credentials:'same-origin'});}catch(e){} }\n" .
             "    Array.prototype.forEach.call(ifr,function(f){\n" .
             "      var src=f.getAttribute('src'); if(!src){ pending--; return; }\n" .
             "      fetch(src,{method:'HEAD',mode:'cors',credentials:'omit'}).then(function(resp){\n" .
-            "        if(resp && resp.ok){ anyOk=true; }\n" .
-            "        else { var p=f.parentElement; if(p) p.style.display='none'; report(); }\n" .
-            "      }).catch(function(){ var p=f.parentElement; if(p) p.style.display='none'; report(); })\n" .
-            "      .finally(function(){ pending--; if(pending===0 && !anyOk){ c.style.display='none'; } });\n" .
+            "        if(resp && resp.ok){ anyOk=true; console.log('[Bookshop inline] ✅ OK '+resp.status+' '+src); }\n" .
+            "        else { var p=f.parentElement; if(p) p.style.display='none'; console.warn('[Bookshop inline] ❌ Non-2xx '+(resp?resp.status:'(no resp)')+' '+src+' — hiding this block'); report(); }\n" .
+            "      }).catch(function(err){ var p=f.parentElement; if(p) p.style.display='none'; console.error('[Bookshop inline] 🕳️ CORS/network error '+src+' — hiding this block'); report(); })\n" .
+            "      .finally(function(){ pending--; if(pending===0 && !anyOk){ c.style.display='none'; console.warn('[Bookshop inline] All failed; container hidden id='+c.id+' isbn='+isbn); } });\n" .
             "    });\n" .
-            "  },10000);\n" .
+            "  }\n" .
+            "  setTimeout(function(){ run(); setInterval(function(){ alert('Re-running Bookshop checks for ISBN '+isbn); run(); },10000); },10000);\n" .
             "})();"
           ),
         ],
