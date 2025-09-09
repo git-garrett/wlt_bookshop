@@ -151,9 +151,9 @@ class BookshopFeaturedFormatter extends FormatterBase {
             "    Array.prototype.forEach.call(ifr,function(f){\n" .
             "      var src=f.getAttribute('src'); if(!src){ pending--; return; }\n" .
             "      fetch(src,{method:'HEAD',mode:'cors',credentials:'omit'}).then(function(resp){\n" .
-            "        if(resp && resp.ok){ anyOk=true; console.log('[Bookshop inline] ✅ OK '+resp.status+' '+src); }\n" .
-            "        else { var p=f.parentElement; if(p) p.style.display='none'; console.warn('[Bookshop inline] ❌ Non-2xx '+(resp?resp.status:'(no resp)')+' '+src+' — hiding this block'); report(); }\n" .
-            "      }).catch(function(err){ var p=f.parentElement; if(p) p.style.display='none'; console.error('[Bookshop inline] 🕳️ CORS/network error '+src+' — hiding this block'); report(); })\n" .
+            "        if(resp && resp.ok){ anyOk=true; }\n" .
+            "        else { var p=f.parentElement; if(p) p.style.display='none'; report(); }\n" .
+            "      }).catch(function(err){ var p=f.parentElement; if(p) p.style.display='none'; report(); })\n" .
             "      .finally(function(){ pending--; if(pending===0){ if(!anyOk){ c.style.display='none'; console.warn('[Bookshop inline] All failed; container hidden id='+c.id+' isbn='+isbn); note.textContent='All embeds failed ('+ts()+')'; } else { note.textContent='Checks complete ('+ts()+')'; } } });\n" .
             "    });\n" .
             "  }\n" .
