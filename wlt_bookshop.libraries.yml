@@ -9,3 +9,4 @@ bookshop_featured:
     - core/drupal
     - core/drupal.ajax
     - core/jquery
+    - core/jquery.once

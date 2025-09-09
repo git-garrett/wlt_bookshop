@@ -17,7 +17,15 @@
       }
 
       dbg('Drupal behavior attached; scanning containers.');
-      $('.wlt-bookshop-featured-container', context).once('wlt-bookshop-featured').each(function () {
+      var $containers = $('.wlt-bookshop-featured-container', context);
+      if ($.fn.once) {
+        try { $containers = $containers.once('wlt-bookshop-featured'); } catch(e) { dbg('once() error: ' + (e && e.message ? e.message : e)); }
+      } else {
+        // Fallback if jquery.once is unavailable.
+        $containers = $containers.filter(function () { if (this.__wltProcessed) return false; this.__wltProcessed = true; return true; });
+      }
+      if ($containers.length === 0) { dbg('No containers to process (after once filtering).'); }
+      $containers.each(function () {
         const $container = $(this);
         const nid = $container.data('nid');
         const isbn = $container.data('isbn');
