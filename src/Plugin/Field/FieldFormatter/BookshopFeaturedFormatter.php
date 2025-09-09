@@ -149,11 +149,12 @@ class BookshopFeaturedFormatter extends FormatterBase {
             "    var anyOk=false, pending=ifr.length;\n" .
             "    Array.prototype.forEach.call(ifr,function(f){\n" .
             "      var src=f.getAttribute('src'); if(!src){ pending--; return; }\n" .
-            "      logLine('REQUEST HEAD '+src+' (mode:cors, credentials:omit)');\n" .
+            "      var pr=f.parentElement; var si=document.createElement('div'); si.className='bookshop-check-inline'; si.style.cssText='margin:4px 0 8px;font:12px/1.2 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280'; pr && pr.appendChild(si);\n" .
+            "      var req='REQUEST HEAD '+src+' (mode:cors, credentials:omit)'; si.textContent=req; logLine(req);\n" .
             "      fetch(src,{method:'HEAD',mode:'cors',credentials:'omit'}).then(function(resp){\n" .
-            "        if(resp && resp.ok){ anyOk=true; logLine('RESPONSE '+resp.status+' ok='+resp.ok+' '+src); }\n" .
-            "        else { logLine('RESPONSE '+(resp?resp.status:'(no resp)')+' ok='+(resp?resp.ok:false)+' '+src); if(!debug){ var p=f.parentElement; if(p) p.style.display='none'; report(); } }\n" .
-            "      }).catch(function(err){ logLine('ERROR CORS/Network '+src); if(!debug){ var p=f.parentElement; if(p) p.style.display='none'; report(); } })\n" .
+            "        if(resp && resp.ok){ anyOk=true; var msg='RESPONSE '+resp.status+' ok='+resp.ok+' '+src; logLine(msg); if(si){ si.textContent=msg; si.style.color='#16a34a'; } }\n" .
+            "        else { var msg='RESPONSE '+(resp?resp.status:'(no resp)')+' ok='+(resp?resp.ok:false)+' '+src; logLine(msg); if(si){ si.textContent=msg+' — hidden'; si.style.color='#ef4444'; } if(!debug){ var p=f.parentElement; if(p) p.style.display='none'; report(); } }\n" .
+            "      }).catch(function(err){ var msg='ERROR CORS/Network '+src; logLine(msg); if(si){ si.textContent=msg+' — hidden'; si.style.color='#d97706'; } if(!debug){ var p=f.parentElement; if(p) p.style.display='none'; report(); } })\n" .
             "      .finally(function(){ pending--; if(pending===0){ if(!anyOk){ note.textContent='All embeds failed ('+ts()+')'; } else { note.textContent='Checks complete ('+ts()+')'; } } });\n" .
             "    });\n" .
             "  }\n" .
