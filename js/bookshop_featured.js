@@ -9,30 +9,55 @@
         const isbn = $container.data('isbn');
         const token = $container.data('report-token');
 
-        // After a delay, if no iframe or zero-height iframe, hide.
+        // After a delay to allow widget to inject iframes, verify they load.
         setTimeout(function () {
-          const $iframe = $container.find('iframe');
-          let broken = false;
-          if ($iframe.length === 0) {
-            broken = true;
-          }
-          else {
-            const h = $iframe[0].clientHeight || $iframe.height();
-            if (!h || h < 20) {
-              broken = true;
-            }
-          }
+          const $iframes = $container.find('iframe');
+          const sources = [];
+          $iframes.each(function () {
+            const src = this.getAttribute('src');
+            if (src) { sources.push(src); }
+          });
 
-          if (broken) {
-            $container.hide();
-            // Report bad ISBN silently so it can be suppressed for 30 days.
-            if (nid && isbn && token) {
-              $.ajax({
-                url: Drupal.url('wlt-bookshop/report-bad-isbn/' + nid) + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token),
-                method: 'POST',
-                dataType: 'json'
+          // If we have sources, attempt a CORS fetch of each and require at least one 200.
+          if (sources.length > 0) {
+            const unique = Array.from(new Set(sources));
+            const urlOkMap = {};
+            const checks = unique.map(function (url) {
+              return fetch(url, { method: 'GET', cache: 'no-store', redirect: 'follow' })
+                .then(function (res) { urlOkMap[url] = !!res && res.ok; })
+                .catch(function () { urlOkMap[url] = false; });
+            });
+            Promise.all(checks).then(function () {
+              // Determine per-iframe result based on its src.
+              let anyOk = false;
+              $iframes.each(function () {
+                const src = this.getAttribute('src');
+                const ok = src && urlOkMap[src] === true;
+                if (ok) { anyOk = true; }
               });
-            }
+
+              // Hide and report each failing iframe block individually.
+              $iframes.each(function () {
+                const src = this.getAttribute('src');
+                const ok = src && urlOkMap[src] === true;
+                if (!ok) {
+                  const parent = this.parentElement;
+                  if (parent) { parent.style.display = 'none'; }
+                  if (nid && isbn && token) {
+                    $.ajax({
+                      url: Drupal.url('wlt-bookshop/report-bad-isbn/' + nid) + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token),
+                      method: 'POST',
+                      dataType: 'json'
+                    });
+                  }
+                }
+              });
+
+              // If every iframe failed, also hide the entire container.
+              if (!anyOk) {
+                $container.hide();
+              }
+            });
           }
         }, 3500);
       });
