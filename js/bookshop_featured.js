@@ -40,9 +40,20 @@
               $iframes.each(function () {
                 const src = this.getAttribute('src');
                 const ok = src && urlOkMap[src] === true;
+                // Add/update a status label beside the iframe for debugging.
+                let $status = $(this).next('.fetch-check-status');
+                if ($status.length === 0) {
+                  $status = $('<div class="fetch-check-status"/>').insertAfter(this);
+                }
+                const info = urlOkMap[src];
+                const statusText = ok ? ('✅ OK ' + (info && typeof info.status !== 'undefined' ? '(' + info.status + ')' : ''))
+                                      : ('❌ Failed ' + (info && typeof info.status !== 'undefined' ? '(' + info.status + ')' : ''));
+                $status.text(statusText + ' — ' + (src || ''))
+                       .css({ margin: '6px 0 18px', font: '14px/1.2 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif', color: ok ? '#16a34a' : '#ef4444', wordBreak: 'break-all' });
+
                 if (!ok) {
-                  const parent = this.parentElement;
-                  if (parent) { parent.style.display = 'none'; }
+                  // Hide only the iframe, keep the status visible.
+                  this.style.display = 'none';
                   if (nid && isbn && token) {
                     $.ajax({
                       url: Drupal.url('wlt-bookshop/report-bad-isbn/' + nid) + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token),
