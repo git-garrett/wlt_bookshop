@@ -1,63 +1,111 @@
-document.addEventListener('DOMContentLoaded', function () {
-  var containers = document.querySelectorAll('.wlt-bookshop-featured-container');
-  console.log('[Bookshop checker] Running on', containers.length, 'containers');
+(function () {
+  function reportSuppression(nid, isbn, token) {
+    try {
+      var base = (typeof Drupal !== 'undefined' && Drupal.url)
+        ? Drupal.url('wlt-bookshop/report-bad-isbn/' + nid)
+        : ('/wlt-bookshop/report-bad-isbn/' + nid);
+      fetch(base + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token), {
+        method: 'POST',
+        credentials: 'same-origin'
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
 
-  containers.forEach(function (container) {
+  function checkContainer(container) {
     var nid = container.getAttribute('data-nid');
     var isbn = container.getAttribute('data-isbn');
     var token = container.getAttribute('data-report-token');
-    var iframes = container.querySelectorAll('iframe');
-    if (iframes.length === 0) {
-      console.log('[Bookshop checker] No iframes in container nid=' + nid + ' isbn=' + isbn);
-      return;
-    }
 
-    var anyOk = false;
-    var pending = iframes.length;
+    var attempts = 0;
+    var maxAttempts = 8; // ~8s total polling for iframes to appear
 
-    iframes.forEach(function (iframe) {
-      var src = iframe.getAttribute('src');
-      if (!src) { pending--; return; }
+    function pollAndRun() {
+      var iframes = container.querySelectorAll('iframe');
+      if (iframes.length === 0) {
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(pollAndRun, 1000);
+        } else {
+          console.log('[Bookshop checker] No iframes found (nid=', nid, 'isbn=', isbn, ') after waiting');
+        }
+        return;
+      }
 
-      // HEAD request is sufficient; treat CORS failures as broken.
-      fetch(src, { method: 'HEAD', mode: 'cors', credentials: 'omit' })
-        .then(function (resp) {
-          if (resp && resp.ok) {
-            anyOk = true;
-            console.log('[Bookshop checker] ✅ OK', resp.status, src);
-          } else {
-            // Hide only this iframe's immediate wrapper block.
+      var anyOk = false;
+      var pending = iframes.length;
+
+      iframes.forEach(function (iframe) {
+        var src = iframe.getAttribute('src');
+        if (!src) { pending--; return; }
+
+        // HEAD request; treat CORS/network error or non-2xx as failure.
+        fetch(src, { method: 'HEAD', mode: 'cors', credentials: 'omit' })
+          .then(function (resp) {
+            if (resp && resp.ok) {
+              anyOk = true;
+              console.log('[Bookshop checker] ✅ OK', resp.status, src);
+            } else {
+              // Hide only this iframe's immediate wrapper block.
+              var parent = iframe.parentElement;
+              if (parent) parent.style.display = 'none';
+              console.warn('[Bookshop checker] ❌ Non-2xx', (resp ? resp.status : '(no resp)'), src, '— hiding this block');
+              reportSuppression(nid, isbn, token);
+            }
+          })
+          .catch(function (err) {
+            // CORS/network error: hide this block and report.
             var parent = iframe.parentElement;
             if (parent) parent.style.display = 'none';
-            console.warn('[Bookshop checker] ❌ Non-2xx', (resp ? resp.status : '(no resp)'), src, '— hiding this block');
-            if (nid && isbn && token && typeof Drupal !== 'undefined' && Drupal.url) {
-              fetch(Drupal.url('wlt-bookshop/report-bad-isbn/' + nid) + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token), {
-                method: 'POST', credentials: 'same-origin'
-              });
+            console.error('[Bookshop checker] 🕳️ CORS/network error', src, err, '— hiding this block');
+            reportSuppression(nid, isbn, token);
+          })
+          .finally(function () {
+            pending--;
+            if (pending === 0) {
+              if (!anyOk) {
+                container.style.display = 'none';
+              }
+              console.log('[Bookshop checker] Completed nid=', nid, 'isbn=', isbn, anyOk ? '(some OK)' : '(all failed)');
             }
+          });
+      });
+    }
+
+    // Start polling after a short delay to give widgets time to inject.
+    setTimeout(pollAndRun, 1000);
+  }
+
+  function runChecks() {
+    var containers = document.querySelectorAll('.wlt-bookshop-featured-container');
+    console.log('[Bookshop checker] Running on', containers.length, 'containers');
+    containers.forEach(checkContainer);
+
+    // Also watch for containers added later (AJAX or deferred rendering).
+    var observer = new MutationObserver(function (records) {
+      records.forEach(function (rec) {
+        if (!rec.addedNodes) return;
+        rec.addedNodes.forEach(function (node) {
+          if (node.nodeType !== 1) return;
+          if (node.classList && node.classList.contains('wlt-bookshop-featured-container')) {
+            console.log('[Bookshop checker] New container detected; scheduling check');
+            checkContainer(node);
           }
-        })
-        .catch(function (err) {
-          // CORS/network error: hide container and report.
-          var parent = iframe.parentElement;
-          if (parent) parent.style.display = 'none';
-          console.error('[Bookshop checker] 🕳️ CORS/network error', src, err, '— hiding this block');
-          if (nid && isbn && token && typeof Drupal !== 'undefined' && Drupal.url) {
-            fetch(Drupal.url('wlt-bookshop/report-bad-isbn/' + nid) + '?value=' + encodeURIComponent(isbn) + '&token=' + encodeURIComponent(token), {
-              method: 'POST', credentials: 'same-origin'
-            });
-          }
-        })
-        .finally(function () {
-          pending--;
-          if (pending === 0) {
-            if (!anyOk) {
-              // All failed → hide entire container.
-              container.style.display = 'none';
-            }
-            console.log('[Bookshop checker] Completed for nid=' + nid + ' isbn=' + isbn + (anyOk ? ' (some OK)' : ' (all failed)'));
+          var nested = node.querySelectorAll ? node.querySelectorAll('.wlt-bookshop-featured-container') : [];
+          if (nested && nested.length) {
+            nested.forEach(checkContainer);
           }
         });
+      });
     });
-  });
-});
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', runChecks);
+  } else {
+    setTimeout(runChecks, 0);
+  }
+})();
+
