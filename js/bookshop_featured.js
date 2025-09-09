@@ -47,17 +47,15 @@
               anyOk = true;
               console.log('[Bookshop checker] ✅ OK', resp.status, src);
             } else {
-              // Hide only this iframe's immediate wrapper block.
-              var parent = iframe.parentElement;
-              if (parent) parent.style.display = 'none';
+              // Hide the grid item containing this iframe so layout collapses.
+              hideGridItem(iframe);
               console.warn('[Bookshop checker] ❌ Non-2xx', (resp ? resp.status : '(no resp)'), src, '— hiding this block');
               reportSuppression(nid, isbn, token);
             }
           })
           .catch(function (err) {
-            // CORS/network error: hide this block and report.
-            var parent = iframe.parentElement;
-            if (parent) parent.style.display = 'none';
+            // CORS/network error: hide grid item and report.
+            hideGridItem(iframe);
             console.error('[Bookshop checker] 🕳️ CORS/network error', src, err, '— hiding this block');
             reportSuppression(nid, isbn, token);
           })
@@ -65,7 +63,8 @@
             pending--;
             if (pending === 0) {
               if (!anyOk) {
-                container.style.display = 'none';
+                // Hide the entire grid item for this container if all failed.
+                hideGridItem(container);
               }
               console.log('[Bookshop checker] Completed nid=', nid, 'isbn=', isbn, anyOk ? '(some OK)' : '(all failed)');
             }
@@ -135,5 +134,17 @@
       runChecks();
     });
     document.body.appendChild(btn);
+  }
+
+  // Hide the nearest grid item so the flex layout reflows cleanly.
+  function hideGridItem(el) {
+    try {
+      var gridItem = (el.closest && el.closest('.field__item')) || el.parentElement || el;
+      if (gridItem && gridItem.parentElement) {
+        gridItem.style.display = 'none';
+      }
+    } catch (e) {
+      // no-op
+    }
   }
 })();
