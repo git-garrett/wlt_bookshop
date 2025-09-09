@@ -157,7 +157,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
             "      .finally(function(){ pending--; if(pending===0){ if(!anyOk){ c.style.display='none'; console.warn('[Bookshop inline] All failed; container hidden id='+c.id+' isbn='+isbn); note.textContent='All embeds failed ('+ts()+')'; } else { note.textContent='Checks complete ('+ts()+')'; } } });\n" .
             "    });\n" .
             "  }\n" .
-            "  setTimeout(function(){ run(); setInterval(function(){ var n=ensureNote(); n.textContent='Re-running Bookshop checks… ('+ts()+')'; run(); },10000); },10000);\n" .
+            "  setTimeout(function(){ run(); },10000);\n" .
             "})();"
           ),
         ],
