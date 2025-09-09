@@ -125,6 +125,33 @@ class BookshopFeaturedFormatter extends FormatterBase {
             'data-sku' => $ean,
           ],
         ],
+        // Inline per-container checker: waits 10s, then HEAD-checks each iframe
+        // and hides only failing blocks; hides entire container if all fail.
+        'inline_checker' => [
+          '#type' => 'html_tag',
+          '#tag' => 'script',
+          '#value' => Markup::create(
+            "(function(){\n" .
+            "  var c=document.getElementById('" . $container_id . "'); if(!c) return;\n" .
+            "  setTimeout(function(){\n" .
+            "    var nid=c.getAttribute('data-nid')||'';\n" .
+            "    var isbn=c.getAttribute('data-isbn')||'';\n" .
+            "    var token=c.getAttribute('data-report-token')||'';\n" .
+            "    var ifr=c.getElementsByTagName('iframe'); if(!ifr.length) return;\n" .
+            "    var anyOk=false, pending=ifr.length;\n" .
+            "    function report(){ try{ var base=(typeof Drupal!=='undefined'&&Drupal.url)?Drupal.url('wlt-bookshop/report-bad-isbn/'+nid):('/wlt-bookshop/report-bad-isbn/'+nid); fetch(base+'?value='+encodeURIComponent(isbn)+'&token='+encodeURIComponent(token),{method:'POST',credentials:'same-origin'});}catch(e){} }\n" .
+            "    Array.prototype.forEach.call(ifr,function(f){\n" .
+            "      var src=f.getAttribute('src'); if(!src){ pending--; return; }\n" .
+            "      fetch(src,{method:'HEAD',mode:'cors',credentials:'omit'}).then(function(resp){\n" .
+            "        if(resp && resp.ok){ anyOk=true; }\n" .
+            "        else { var p=f.parentElement; if(p) p.style.display='none'; report(); }\n" .
+            "      }).catch(function(){ var p=f.parentElement; if(p) p.style.display='none'; report(); })\n" .
+            "      .finally(function(){ pending--; if(pending===0 && !anyOk){ c.style.display='none'; } });\n" .
+            "    });\n" .
+            "  },10000);\n" .
+            "})();"
+          ),
+        ],
         '#cache' => [
           'contexts' => $items->getEntity()->getCacheContexts(),
           'tags' => $items->getEntity()->getCacheTags(),
