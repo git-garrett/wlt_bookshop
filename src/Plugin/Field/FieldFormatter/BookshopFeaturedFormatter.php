@@ -126,7 +126,8 @@ class BookshopFeaturedFormatter extends FormatterBase {
           ],
         ],
         // Inline per-container checker: waits 10s, then HEAD-checks each iframe
-        // and hides only failing blocks; hides entire container if all fail.
+        // and hides only failing blocks (unless debug is on). Leaves the
+        // container visible so the completion note/log remain.
         'inline_checker' => [
           '#type' => 'html_tag',
           '#tag' => 'script',
@@ -136,25 +137,24 @@ class BookshopFeaturedFormatter extends FormatterBase {
             "  var nid=c.getAttribute('data-nid')||'';\n" .
             "  var isbn=c.getAttribute('data-isbn')||'';\n" .
             "  var token=c.getAttribute('data-report-token')||'';\n" .
-            "  function report(){ try{ var base=(typeof Drupal!=='undefined'&&Drupal.url)?Drupal.url('wlt-bookshop/report-bad-isbn/'+nid):('/wlt-bookshop/report-bad-isbn/'+nid); fetch(base+'?value='+encodeURIComponent(isbn)+'&token='+encodeURIComponent(token),{method:'POST',credentials:'same-origin'});}catch(e){} }\n" .
-            "  function ensureNote(){\n" .
-            "    var n=c.querySelector('.bookshop-check-note');\n" .
-            "    if(!n){ n=document.createElement('div'); n.className='bookshop-check-note'; n.style.cssText='margin:6px 0 10px;font:12px/1.2 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280'; c.insertBefore(n,c.firstChild); }\n" .
-            "    return n;\n" .
-            "  }\n" .
+            "  var debug=/[?&]bookshop_debug=1\b/.test(location.search);\n" .
+            "  function report(){ if(debug) return; try{ var base=(typeof Drupal!=='undefined'&&Drupal.url)?Drupal.url('wlt-bookshop/report-bad-isbn/'+nid):('/wlt-bookshop/report-bad-isbn/'+nid); fetch(base+'?value='+encodeURIComponent(isbn)+'&token='+encodeURIComponent(token),{method:'POST',credentials:'same-origin'});}catch(e){} }\n" .
             "  function ts(){ var d=new Date(); return d.toLocaleTimeString(); }\n" .
+            "  function ensureNote(){ var n=c.querySelector('.bookshop-check-note'); if(!n){ n=document.createElement('div'); n.className='bookshop-check-note'; n.style.cssText='margin:6px 0 6px;font:12px/1.2 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280'; c.insertBefore(n,c.firstChild);} return n;}\n" .
+            "  function ensureLog(){ var l=c.querySelector('.bookshop-check-log'); if(!l){ l=document.createElement('div'); l.className='bookshop-check-log'; l.style.cssText='margin:6px 0 10px;padding:6px 8px;border:1px solid #e5e7eb;background:#f9fafb;font:12px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#374151'; c.appendChild(l);} return l;}\n" .
+            "  function logLine(text){ var l=ensureLog(); var row=document.createElement('div'); row.textContent='['+ts()+'] '+text; l.appendChild(row);}\n" .
             "  function run(){\n" .
             "    var note=ensureNote(); note.textContent='Checking Bookshop embeds… ('+ts()+')';\n" .
-            "    console.log('[Bookshop inline] Checking container id='+c.id+' isbn='+isbn);\n" .
-            "    var ifr=c.getElementsByTagName('iframe'); if(!ifr.length){ console.log('[Bookshop inline] No iframes yet'); note.textContent='No iframes yet ('+ts()+')'; return; }\n" .
+            "    var ifr=c.getElementsByTagName('iframe'); if(!ifr.length){ note.textContent='No iframes yet ('+ts()+')'; return; }\n" .
             "    var anyOk=false, pending=ifr.length;\n" .
             "    Array.prototype.forEach.call(ifr,function(f){\n" .
             "      var src=f.getAttribute('src'); if(!src){ pending--; return; }\n" .
+            "      logLine('REQUEST HEAD '+src+' (mode:cors, credentials:omit)');\n" .
             "      fetch(src,{method:'HEAD',mode:'cors',credentials:'omit'}).then(function(resp){\n" .
-            "        if(resp && resp.ok){ anyOk=true; }\n" .
-            "        else { var p=f.parentElement; if(p) p.style.display='none'; report(); }\n" .
-            "      }).catch(function(err){ var p=f.parentElement; if(p) p.style.display='none'; report(); })\n" .
-            "      .finally(function(){ pending--; if(pending===0){ if(!anyOk){ c.style.display='none'; console.warn('[Bookshop inline] All failed; container hidden id='+c.id+' isbn='+isbn); note.textContent='All embeds failed ('+ts()+')'; } else { note.textContent='Checks complete ('+ts()+')'; } } });\n" .
+            "        if(resp && resp.ok){ anyOk=true; logLine('RESPONSE '+resp.status+' ok='+resp.ok+' '+src); }\n" .
+            "        else { logLine('RESPONSE '+(resp?resp.status:'(no resp)')+' ok='+(resp?resp.ok:false)+' '+src); if(!debug){ var p=f.parentElement; if(p) p.style.display='none'; report(); } }\n" .
+            "      }).catch(function(err){ logLine('ERROR CORS/Network '+src); if(!debug){ var p=f.parentElement; if(p) p.style.display='none'; report(); } })\n" .
+            "      .finally(function(){ pending--; if(pending===0){ if(!anyOk){ note.textContent='All embeds failed ('+ts()+')'; } else { note.textContent='Checks complete ('+ts()+')'; } } });\n" .
             "    });\n" .
             "  }\n" .
             "  setTimeout(function(){ run(); },10000);\n" .
