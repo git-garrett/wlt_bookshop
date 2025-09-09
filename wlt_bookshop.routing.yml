@@ -26,6 +26,12 @@ wlt_bookshop.report_bad_isbn:
     parameters:
       node:
         type: entity:node
+wlt_bookshop.check_embed:
+  path: '/wlt-bookshop/check-embed'
+  defaults:
+    _controller: '\Drupal\wlt_bookshop\Controller\IsbnAdminController::check'
+  requirements:
+    _access: 'TRUE'
 wlt_bookshop.remove_isbn:
   path: '/wlt-bookshop/remove-isbn/{node}'
   defaults:
