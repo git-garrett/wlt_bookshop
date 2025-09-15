@@ -5,7 +5,7 @@ namespace Drupal\wlt_bookshop\Plugin\Field\FieldFormatter;
 use Drupal\Core\Field\FieldItemListInterface;
 use Drupal\Core\Field\FormatterBase;
 use Drupal\Core\Form\FormStateInterface;
-use Drupal\Core\Render\Markup;
+ 
 
 /**
  * Plugin implementation of the 'bookshop_featured_widget' formatter.
@@ -125,52 +125,13 @@ class BookshopFeaturedFormatter extends FormatterBase {
             'data-sku' => $ean,
           ],
         ],
-        // Inline per-container checker: waits 10s, then HEAD-checks each iframe
-        // and hides failures. In non-debug mode it hides the entire grid item
-        // (closest .field__item) so the layout collapses cleanly and no debug
-        // UI is shown. In debug mode, it shows a note/log and does not hide the
-        // grid item so you can see statuses.
-        'inline_checker' => [
-          '#type' => 'html_tag',
-          '#tag' => 'script',
-          '#value' => Markup::create(
-            "(function(){\n" .
-            "  var c=document.getElementById('" . $container_id . "'); if(!c) return;\n" .
-            "  var nid=c.getAttribute('data-nid')||'';\n" .
-            "  var isbn=c.getAttribute('data-isbn')||'';\n" .
-            "  var token=c.getAttribute('data-report-token')||'';\n" .
-            "  var debug=/[?&]bookshop_debug=1\b/.test(location.search);\n" .
-            "  function report(){ if(debug) return; try{ var base=(typeof Drupal!=='undefined'&&Drupal.url)?Drupal.url('wlt-bookshop/report-bad-isbn/'+nid):('/wlt-bookshop/report-bad-isbn/'+nid); fetch(base+'?value='+encodeURIComponent(isbn)+'&token='+encodeURIComponent(token),{method:'POST',credentials:'same-origin'});}catch(e){} }\n" .
-            "  function ts(){ var d=new Date(); return d.toLocaleTimeString(); }\n" .
-            "  function ensureNote(){ var n=c.querySelector('.bookshop-check-note'); if(!n){ n=document.createElement('div'); n.className='bookshop-check-note'; n.style.cssText='margin:6px 0 6px;font:12px/1.2 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280'; c.insertBefore(n,c.firstChild);} return n;}\n" .
-            "  function ensureLog(){ var l=c.querySelector('.bookshop-check-log'); if(!l){ l=document.createElement('div'); l.className='bookshop-check-log'; l.style.cssText='margin:6px 0 10px;padding:6px 8px;border:1px solid #e5e7eb;background:#f9fafb;font:12px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#374151'; c.appendChild(l);} return l;}\n" .
-            "  function logLine(text){ if(!debug) return; var l=ensureLog(); var row=document.createElement('div'); row.textContent='['+ts()+'] '+text; l.appendChild(row);}\n" .
-            "  function hideGridItem(el){ try{ var gi=(el.closest && el.closest('.field__item'))||el.parentElement||el; if(gi){ gi.style.display='none'; } }catch(e){} }\n" .
-            "  function run(){\n" .
-            "    var note=debug?ensureNote():null; if(note){ note.textContent='Checking Bookshop embeds… ('+ts()+')'; }\n" .
-            "    var ifr=c.getElementsByTagName('iframe'); if(!ifr.length){ if(note){ note.textContent='No iframes yet ('+ts()+')'; } return; }\n" .
-            "    var anyOk=false, pending=ifr.length;\n" .
-            "    Array.prototype.forEach.call(ifr,function(f){\n" .
-            "      var src=f.getAttribute('src'); if(!src){ pending--; return; }\n" .
-            "      var pr=f.parentElement; var si=null; if(debug){ si=document.createElement('div'); si.className='bookshop-check-inline'; si.style.cssText='margin:4px 0 8px;font:12px/1.2 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#6b7280'; pr && pr.appendChild(si); }\n" .
-            "      var req='REQUEST HEAD '+src+' (mode:cors, credentials:omit)'; if(si){ si.textContent=req; } logLine(req);\n" .
-            "      fetch(src,{method:'HEAD',mode:'cors',credentials:'omit'}).then(function(resp){\n" .
-            "        if(resp && resp.ok){ anyOk=true; var msg='RESPONSE '+resp.status+' ok='+resp.ok+' '+src; logLine(msg); if(si){ si.textContent=msg; si.style.color='#16a34a'; } }\n" .
-            "        else { var msg='RESPONSE '+(resp?resp.status:'(no resp)')+' ok='+(resp?resp.ok:false)+' '+src; logLine(msg); if(si){ si.textContent=msg+' — hidden'; si.style.color='#ef4444'; } if(!debug){ hideGridItem(f); report(); } }\n" .
-            "      }).catch(function(err){ var msg='ERROR CORS/Network '+src; logLine(msg); if(si){ si.textContent=msg+' — hidden'; si.style.color='#d97706'; } if(!debug){ hideGridItem(f); report(); } })\n" .
-            "      .finally(function(){ pending--; if(pending===0){ if(!anyOk){ if(debug && note){ note.textContent='All embeds failed ('+ts()+')'; } else { hideGridItem(c); } } else { if(debug && note){ note.textContent='Checks complete ('+ts()+')'; } } } });\n" .
-            "    });\n" .
-            "  }\n" .
-            "  setTimeout(function(){ run(); },10000);\n" .
-            "})();"
-          ),
-        ],
         '#cache' => [
           'contexts' => $items->getEntity()->getCacheContexts(),
           'tags' => $items->getEntity()->getCacheTags(),
           'max-age' => $items->getEntity()->getCacheMaxAge(),
         ],
       ];
+      // No inline checker; global JS handles validation/suppression.
       $count++;
     }
 

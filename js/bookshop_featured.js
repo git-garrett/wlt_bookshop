@@ -105,12 +105,12 @@
     document.addEventListener('DOMContentLoaded', function () {
       // Inject a small floating button to manually re-run checks.
       injectRunner();
-      // Delay initial run by 10s to allow widgets to inject iframes.
-      setTimeout(runChecks, 10000);
+      // Run checks immediately on DOM ready.
+      runChecks();
     });
   } else {
     injectRunner();
-    setTimeout(runChecks, 10000);
+    runChecks();
   }
 
   function injectRunner() {
