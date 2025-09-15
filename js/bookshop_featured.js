@@ -77,9 +77,8 @@
   }
 
   function runChecks() {
-    var containers = document.querySelectorAll('.wlt-bookshop-featured-container');
-    console.log('[Bookshop checker] Running on', containers.length, 'containers');
-    containers.forEach(checkContainer);
+    console.log('[Bookshop checker] Disabled for testing — no suppression/hiding');
+    return; // TEMP: disable all checks/hide/report during testing
 
     // Also watch for containers added later (AJAX or deferred rendering).
     var observer = new MutationObserver(function (records) {
