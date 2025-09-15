@@ -47,24 +47,23 @@
               anyOk = true;
               console.log('[Bookshop checker] ✅ OK', resp.status, src);
             } else {
-              // Hide the grid item containing this iframe so layout collapses.
-              hideGridItem(iframe);
-              console.warn('[Bookshop checker] ❌ Non-2xx', (resp ? resp.status : '(no resp)'), src, '— hiding this block');
-              reportSuppression(nid, isbn, token);
+              // Hide only this iframe's immediate wrapper to avoid showing bad content.
+              hideImmediateWrapper(iframe);
+              console.warn('[Bookshop checker] ❌ Non-2xx', (resp ? resp.status : '(no resp)'), src, '— hiding this iframe wrapper');
             }
           })
           .catch(function (err) {
-            // CORS/network error: hide grid item and report.
-            hideGridItem(iframe);
-            console.error('[Bookshop checker] 🕳️ CORS/network error', src, err, '— hiding this block');
-            reportSuppression(nid, isbn, token);
+            // CORS/network error: hide this iframe's wrapper.
+            hideImmediateWrapper(iframe);
+            console.error('[Bookshop checker] 🕳️ CORS/network error', src, err, '— hiding this iframe wrapper');
           })
           .finally(function () {
             pending--;
             if (pending === 0) {
               if (!anyOk) {
-                // Hide the entire grid item for this container if all failed.
+                // Remove the entire grid item for this container if all failed and report once.
                 hideGridItem(container);
+                reportSuppression(nid, isbn, token);
               }
               console.log('[Bookshop checker] Completed nid=', nid, 'isbn=', isbn, anyOk ? '(some OK)' : '(all failed)');
             }
@@ -146,6 +145,16 @@
       } else if (gridItem.parentElement) {
         gridItem.parentElement.removeChild(gridItem);
       }
+    } catch (e) {
+      // no-op
+    }
+  }
+
+  // Hide just the immediate wrapper for a single iframe.
+  function hideImmediateWrapper(el) {
+    try {
+      var parent = el && el.parentElement;
+      if (parent) parent.style.display = 'none';
     } catch (e) {
       // no-op
     }
