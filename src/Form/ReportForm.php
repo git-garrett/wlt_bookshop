@@ -74,10 +74,40 @@ class ReportForm extends FormBase {
       '#value' => $this->t('Refresh report'),
     ];
 
+    // Admin-only control to purge all active suppressions immediately.
+    if (\Drupal::currentUser()->hasPermission('administer nodes')) {
+      $form['actions']['purge'] = [
+        '#type' => 'submit',
+        '#value' => $this->t('Purge suppression list'),
+        '#submit' => ['::purgeSuppressionList'],
+        '#attributes' => [
+          'onclick' => "return confirm('This will clear all active Bookshop ISBN suppressions. Continue?');",
+        ],
+      ];
+    }
+
     return $form;
   }
 
   public function submitForm(array &$form, FormStateInterface $form_state): void {
+    $form_state->setRebuild(TRUE);
+  }
+
+  /**
+   * Form submit handler to purge all ISBN suppressions.
+   */
+  public function purgeSuppressionList(array &$form, FormStateInterface $form_state): void {
+    if (!\Drupal::currentUser()->hasPermission('administer nodes')) {
+      $this->messenger()->addError($this->t('You do not have permission to purge suppressions.'));
+      return;
+    }
+    try {
+      \Drupal::cache('wlt_bookshop_bad_isbn')->deleteAll();
+      $this->messenger()->addStatus($this->t('Suppression list purged.'));
+    }
+    catch (\Throwable $e) {
+      $this->messenger()->addError($this->t('Failed to purge suppressions: @msg', ['@msg' => $e->getMessage()]));
+    }
     $form_state->setRebuild(TRUE);
   }
 
@@ -157,4 +187,3 @@ class ReportForm extends FormBase {
     return $report;
   }
 }
-
