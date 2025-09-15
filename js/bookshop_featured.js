@@ -136,12 +136,15 @@
     document.body.appendChild(btn);
   }
 
-  // Hide the nearest grid item so the flex layout reflows cleanly.
+  // Remove the nearest grid item so the flex layout reflows cleanly.
   function hideGridItem(el) {
     try {
       var gridItem = (el.closest && el.closest('.field__item')) || el.parentElement || el;
-      if (gridItem && gridItem.parentElement) {
-        gridItem.style.display = 'none';
+      if (!gridItem) return;
+      if (typeof gridItem.remove === 'function') {
+        gridItem.remove();
+      } else if (gridItem.parentElement) {
+        gridItem.parentElement.removeChild(gridItem);
       }
     } catch (e) {
       // no-op
