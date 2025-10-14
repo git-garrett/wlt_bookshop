@@ -1,8 +1,14 @@
 <?php
 
-use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
+use Drupal\Core\Routing\RouteMatchInterface;
 use Drupal\node\NodeInterface;
+use Drupal\Component\Utility\Html;
+
+if (!defined('WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID')) {
+  define('WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID', '81678');
+}
 
 /**
  * Implements hook_help().
@@ -212,4 +218,221 @@ function wlt_bookshop_normalize_isbn(string $isbn): ?string {
   }
   // Return 13-digit string if we can infer it, otherwise drop.
   return NULL;
+}
+
+/**
+ * Retrieve the first author name from the node, if available.
+ */
+function wlt_bookshop_get_primary_author(NodeInterface $node): ?string {
+  $authors = wlt_bookshop_collect_author_names($node);
+  if (empty($authors)) {
+    return NULL;
+  }
+  return reset($authors) ?: NULL;
+}
+
+/**
+ * Retrieve the configured Bookshop affiliate ID.
+ */
+function wlt_bookshop_get_affiliate_id(): string {
+  static $cached;
+  if ($cached !== NULL) {
+    return $cached;
+  }
+  $affiliate = '';
+  try {
+    $config = \Drupal::config('wlt_bookshop.settings');
+    if ($config) {
+      $affiliate = trim((string) $config->get('affiliate_id'));
+    }
+  }
+  catch (\Throwable $e) {
+    $affiliate = '';
+  }
+  if ($affiliate === '' && defined('WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID')) {
+    $affiliate = WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID;
+  }
+  $cached = $affiliate;
+  return $cached;
+}
+
+/**
+ * Build a Bookshop search URL for a given author.
+ */
+function wlt_bookshop_author_search_url(string $author): string {
+  $author = trim($author);
+  if ($author === '') {
+    return '';
+  }
+  $query = [
+    'keywords' => $author,
+  ];
+  $affiliate = wlt_bookshop_get_affiliate_id();
+  if ($affiliate !== '') {
+    $query['aff'] = $affiliate;
+  }
+  return 'https://bookshop.org/books?' . http_build_query($query);
+}
+
+/**
+ * Link the first occurrence of $author inside $html with $url.
+ */
+function wlt_bookshop_link_author_in_html(string $html, string $author, string $url): string {
+  $author = trim($author);
+  if ($author === '' || stripos($html, $author) === FALSE || $url === '') {
+    return $html;
+  }
+
+  $internal = libxml_use_internal_errors(TRUE);
+  $wrapped = '<div id="wlt-bookshop-wrapper">' . $html . '</div>';
+  $dom = new \DOMDocument('1.0', 'UTF-8');
+  $loaded = $dom->loadHTML('<?xml encoding="utf-8" ?>' . $wrapped, LIBXML_HTML_NODEFDTD | LIBXML_HTML_NOIMPLIED);
+  if (!$loaded) {
+    libxml_clear_errors();
+    libxml_use_internal_errors($internal);
+    // Fallback simple replacement.
+    $pattern = '/' . preg_quote($author, '/') . '/iu';
+    $replacement = '<a href="' . Html::escape($url) . '" class="wlt-bookshop-author-link">$0</a>';
+    return preg_replace($pattern, $replacement, $html, 1) ?? $html;
+  }
+
+  $xpath = new \DOMXPath($dom);
+  $textNodes = $xpath->query('//text()');
+  $matched = FALSE;
+  $needleLength = mb_strlen($author);
+
+  foreach ($textNodes as $textNode) {
+    $parent = $textNode->parentNode;
+    if (!$parent) {
+      continue;
+    }
+    $parentName = strtolower($parent->nodeName);
+    if (in_array($parentName, ['script', 'style', 'a'], TRUE)) {
+      continue;
+    }
+    $text = $textNode->wholeText;
+    $position = mb_stripos($text, $author);
+    if ($position === FALSE) {
+      continue;
+    }
+
+    $before = mb_substr($text, 0, $position);
+    $match = mb_substr($text, $position, $needleLength);
+    $after = mb_substr($text, $position + $needleLength);
+
+    if ($before !== '') {
+      $parent->insertBefore($dom->createTextNode($before), $textNode);
+    }
+
+    $link = $dom->createElement('a');
+    $link->setAttribute('href', $url);
+    $link->setAttribute('class', 'wlt-bookshop-author-link');
+    $link->appendChild($dom->createTextNode($match));
+    $parent->insertBefore($link, $textNode);
+
+    if ($after !== '') {
+      $parent->insertBefore($dom->createTextNode($after), $textNode);
+    }
+
+    $parent->removeChild($textNode);
+    $matched = TRUE;
+    break;
+  }
+
+  $output = $html;
+  if ($matched) {
+    $wrapper = $dom->getElementById('wlt-bookshop-wrapper');
+    if ($wrapper) {
+      $fragments = '';
+      foreach ($wrapper->childNodes as $child) {
+        $fragments .= $dom->saveHTML($child);
+      }
+      if ($fragments !== '') {
+        $output = $fragments;
+      }
+    }
+  }
+
+  libxml_clear_errors();
+  libxml_use_internal_errors($internal);
+  return $output;
+}
+
+/**
+ * Inject a Bookshop link for the primary author inside the node body.
+ */
+function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDisplayInterface $display, $view_mode): void {
+  if ($node->bundle() !== 'book_review') {
+    return;
+  }
+  $current_user = \Drupal::currentUser();
+  if (!$current_user || (int) $current_user->id() !== 3465) {
+    return;
+  }
+  if (empty($build['body']) || empty($build['body'][0]) || !$node->hasField('body') || $node->get('body')->isEmpty()) {
+    return;
+  }
+
+  $targets = [];
+  $author = wlt_bookshop_get_primary_author($node);
+  if ($author) {
+    $targets[$author] = TRUE;
+  }
+  if ($node->hasField('field_editor') && !$node->get('field_editor')->isEmpty()) {
+    foreach ($node->get('field_editor') as $item) {
+      if (isset($item->entity) && $item->entity) {
+        $label = wlt_bookshop_sanitize_text((string) $item->entity->label());
+        if ($label !== '') {
+          $targets[$label] = TRUE;
+        }
+        continue;
+      }
+      if (isset($item->value)) {
+        $value = wlt_bookshop_sanitize_text((string) $item->value);
+        if ($value !== '') {
+          $targets[$value] = TRUE;
+        }
+      }
+    }
+  }
+
+  if (empty($targets)) {
+    return;
+  }
+
+  $body_element =& $build['body'][0];
+  $updated = FALSE;
+
+  foreach (array_keys($targets) as $name) {
+    $url = wlt_bookshop_author_search_url($name);
+    if ($url === '') {
+      continue;
+    }
+    foreach (['#text', '#markup'] as $key) {
+      if (isset($body_element[$key]) && is_string($body_element[$key])) {
+        $body_element[$key] = wlt_bookshop_link_author_in_html($body_element[$key], $name, $url);
+        $updated = TRUE;
+        break 2;
+      }
+    }
+  }
+
+  if (!$updated && isset($body_element['#context']['value']) && is_string($body_element['#context']['value'])) {
+    foreach (array_keys($targets) as $name) {
+      $url = wlt_bookshop_author_search_url($name);
+      if ($url === '') {
+        continue;
+      }
+      $linked = wlt_bookshop_link_author_in_html($body_element['#context']['value'], $name, $url);
+      if ($linked !== $body_element['#context']['value']) {
+        $body_element['#context']['value'] = $linked;
+        $updated = TRUE;
+        break;
+      }
+    }
+  }
+
+  if ($updated) {
+    $body_element['#cache']['tags'][] = 'wlt_bookshop:author-link';
+  }
 }
