@@ -482,7 +482,7 @@ class BookIsbnLookup {
     }
 
     $normalizedWork = $this->normalizeWorkKey($workKey, $payload['works'] ?? [], $editionKey);
-    $format = $this->determineFormat($payload);
+    $formatInfo = $this->determineFormat($payload);
 
     $isbns = [];
     if (!empty($payload['isbn_13']) && is_array($payload['isbn_13'])) {
@@ -493,14 +493,16 @@ class BookIsbnLookup {
     }
 
     foreach ($isbns as $isbn) {
-      $this->storeIsbnEntry($isbn, $normalizedWork, $format, $preferred, $results, $sequence);
+      $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, $preferred, $results, $sequence);
     }
 
     if (is_array($debug)) {
       $entry = [
         'edition' => $editionKey,
         'url' => $editionUrl,
-        'format' => $format,
+        'format' => $formatInfo['format'],
+        'language' => $formatInfo['language'],
+        'country' => $formatInfo['country'],
       ];
       if (!empty($payload['isbn_13'])) {
         $entry['isbn_13'] = $payload['isbn_13'];
@@ -585,9 +587,9 @@ class BookIsbnLookup {
       if (empty($isbns)) {
         continue;
       }
-      $format = $this->determineFormat($entry);
+      $formatInfo = $this->determineFormat($entry);
       foreach ($isbns as $isbn) {
-        $this->storeIsbnEntry($isbn, $normalizedWork, $format, FALSE, $results, $sequence);
+        $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, FALSE, $results, $sequence);
       }
     }
   }
@@ -612,7 +614,7 @@ class BookIsbnLookup {
     return '_unknown:' . $fallback;
   }
 
-  protected function determineFormat(array $data): string {
+  protected function determineFormat(array $data): array {
     $fragments = [];
     foreach (['physical_format', 'physical_format_detail', 'medium'] as $key) {
       if (!empty($data[$key]) && is_string($data[$key])) {
@@ -636,23 +638,52 @@ class BookIsbnLookup {
     }
 
     $text = trim(implode(' ', $fragments));
-    if ($text === '') {
-      return 'other';
+    $format = 'other';
+    if ($text !== '') {
+      if (str_contains($text, 'paperback') || str_contains($text, 'softcover') || str_contains($text, 'soft cover') || str_contains($text, 'softback') || str_contains($text, 'trade paper')) {
+        $format = 'paperback';
+      }
+      elseif (str_contains($text, 'hardcover') || str_contains($text, 'hardback') || str_contains($text, 'hard cover') || str_contains($text, 'cloth') || str_contains($text, 'library binding')) {
+        $format = 'hardcover';
+      }
+      elseif (str_contains($text, 'audio') || str_contains($text, 'sound recording') || str_contains($text, 'cd') || str_contains($text, 'mp3') || str_contains($text, 'spoken word')) {
+        $format = 'audio';
+      }
     }
 
-    if (str_contains($text, 'paperback') || str_contains($text, 'softcover') || str_contains($text, 'soft cover') || str_contains($text, 'softback') || str_contains($text, 'trade paper')) {
-      return 'paperback';
+    $languages = [];
+    if (!empty($data['languages']) && is_array($data['languages'])) {
+      foreach ($data['languages'] as $lang) {
+        if (is_array($lang) && !empty($lang['key'])) {
+          $languages[] = basename($lang['key']);
+        }
+        elseif (is_string($lang)) {
+          $languages[] = basename($lang);
+        }
+      }
     }
-    if (str_contains($text, 'hardcover') || str_contains($text, 'hardback') || str_contains($text, 'hard cover') || str_contains($text, 'cloth') || str_contains($text, 'library binding')) {
-      return 'hardcover';
+
+    $publishPlaces = [];
+    if (!empty($data['publish_places']) && is_array($data['publish_places'])) {
+      foreach ($data['publish_places'] as $place) {
+        if (is_string($place)) {
+          $publishPlaces[] = strtolower($place);
+        }
+        elseif (is_array($place) && !empty($place['name'])) {
+          $publishPlaces[] = strtolower($place['name']);
+        }
+      }
     }
-    if (str_contains($text, 'audio') || str_contains($text, 'sound recording') || str_contains($text, 'cd') || str_contains($text, 'mp3') || str_contains($text, 'spoken word')) {
-      return 'audio';
-    }
-    return 'other';
+
+    return [
+      'format' => $format,
+      'language' => $languages,
+      'country' => $publishPlaces,
+    ];
   }
 
-  protected function formatScore(string $format): int {
+  protected function formatScore(array $formatInfo): int {
+    $format = $formatInfo['format'] ?? 'other';
     return match ($format) {
       'paperback' => 3,
       'hardcover' => 2,
@@ -661,27 +692,50 @@ class BookIsbnLookup {
     };
   }
 
-  protected function storeIsbnEntry(string $isbn, string $workKey, string $format, bool $preferred, array &$results, int &$sequence): void {
+  protected function languageScore(array $formatInfo): int {
+    $langs = array_map('strtolower', $formatInfo['language'] ?? []);
+    if (in_array('eng', $langs, TRUE)) {
+      return 2;
+    }
+    if (!empty($langs)) {
+      return 1;
+    }
+    return 0;
+  }
+
+  protected function countryScore(array $formatInfo): int {
+    $places = $formatInfo['country'] ?? [];
+    foreach ($places as $place) {
+      if (str_contains($place, 'united states') || str_contains($place, 'u.s.') || str_contains($place, 'usa')) {
+        return 2;
+      }
+      if (str_contains($place, 'london') || str_contains($place, 'united kingdom') || str_contains($place, 'uk') || str_contains($place, 'england')) {
+        return 2;
+      }
+    }
+    if (!empty($places)) {
+      return 1;
+    }
+    return 0;
+  }
+
+  protected function storeIsbnEntry(string $isbn, string $workKey, array $formatInfo, bool $preferred, array &$results, int &$sequence): void {
     $normalized = preg_replace('/[^0-9X]/i', '', $isbn);
     if ($normalized === '') {
       return;
     }
     $entry = [
       'isbn' => $normalized,
-      'score' => $this->formatScore($format),
+      'score' => $this->formatScore($formatInfo),
+      'langScore' => $this->languageScore($formatInfo),
+      'countryScore' => $this->countryScore($formatInfo),
       'order' => $sequence++,
       'preferred' => $preferred,
-      'format' => $format,
+      'format' => $formatInfo['format'] ?? 'other',
       'work' => $workKey,
     ];
 
     if (!isset($results[$normalized])) {
-      $results[$normalized] = $entry;
-      return;
-    }
-
-    if ($this->shouldReplaceResult($results[$normalized], $entry)) {
-      $entry['order'] = min($entry['order'], $results[$normalized]['order']);
       $results[$normalized] = $entry;
     }
   }
@@ -691,6 +745,18 @@ class BookIsbnLookup {
       return TRUE;
     }
     if ($candidate['score'] < $existing['score']) {
+      return FALSE;
+    }
+    if ($candidate['langScore'] > $existing['langScore']) {
+      return TRUE;
+    }
+    if ($candidate['langScore'] < $existing['langScore']) {
+      return FALSE;
+    }
+    if ($candidate['countryScore'] > $existing['countryScore']) {
+      return TRUE;
+    }
+    if ($candidate['countryScore'] < $existing['countryScore']) {
       return FALSE;
     }
     if ($candidate['preferred'] && !$existing['preferred']) {
@@ -729,9 +795,19 @@ class BookIsbnLookup {
       elseif ($maxScore >= 2) {
         $entries = array_filter($entries, static fn($entry) => $entry['score'] >= 2);
       }
+      $maxLang = max(array_column($entries, 'langScore'));
+      $entries = array_filter($entries, static fn($entry) => $entry['langScore'] >= $maxLang);
+      $maxCountry = max(array_column($entries, 'countryScore'));
+      $entries = array_filter($entries, static fn($entry) => $entry['countryScore'] >= $maxCountry);
       uasort($entries, static function (array $a, array $b): int {
         if ($a['score'] !== $b['score']) {
           return $b['score'] <=> $a['score'];
+        }
+        if ($a['langScore'] !== $b['langScore']) {
+          return $b['langScore'] <=> $a['langScore'];
+        }
+        if ($a['countryScore'] !== $b['countryScore']) {
+          return $b['countryScore'] <=> $a['countryScore'];
         }
         if ($a['preferred'] !== $b['preferred']) {
           return $a['preferred'] ? -1 : 1;
