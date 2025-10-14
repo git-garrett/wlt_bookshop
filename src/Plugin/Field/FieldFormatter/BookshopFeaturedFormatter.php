@@ -89,6 +89,9 @@ class BookshopFeaturedFormatter extends FormatterBase {
     if ($affiliate === '') {
       return [];
     }
+    if (!$allowed) {
+      return [];
+    }
 
     $entity = $items->getEntity();
     $cache = [
@@ -164,10 +167,6 @@ class BookshopFeaturedFormatter extends FormatterBase {
         'data-wlt-bookshop-cards' => '1',
       ],
     ];
-
-    if (!$allowed) {
-      return [0 => $grid];
-    }
 
     foreach ($cards as $index => $ean) {
       $iframe_src = sprintf(
