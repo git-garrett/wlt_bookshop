@@ -1,0 +1,32 @@
+.wlt-bookshop-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  justify-content: center;
+  margin-top: 2rem;
+}
+
+.wlt-bookshop-card {
+  flex: 1 1 260px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.wlt-bookshop-frame {
+  width: 100%;
+}
+
+.wlt-bookshop-card iframe {
+  width: 100%;
+  min-height: 520px;
+  border: 0;
+}
+
+@media (max-width: 640px) {
+  .wlt-bookshop-card {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+}

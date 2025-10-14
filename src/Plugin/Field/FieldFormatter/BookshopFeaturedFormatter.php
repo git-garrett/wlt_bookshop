@@ -2,10 +2,10 @@
 
 namespace Drupal\wlt_bookshop\Plugin\Field\FieldFormatter;
 
+use Drupal\Core\Cache\Cache;
 use Drupal\Core\Field\FieldItemListInterface;
 use Drupal\Core\Field\FormatterBase;
 use Drupal\Core\Form\FormStateInterface;
-use Drupal\Core\Render\Markup;
 
 /**
  * Plugin implementation of the 'bookshop_featured_widget' formatter.
@@ -76,41 +76,112 @@ class BookshopFeaturedFormatter extends FormatterBase {
    * {@inheritdoc}
    */
   public function viewElements(FieldItemListInterface $items, $langcode) {
-    $elements = [];
+    $current_user = \Drupal::currentUser();
+    if (!$current_user || (int) $current_user->id() !== 3465) {
+      return [];
+    }
+
     $affiliate = trim((string) $this->getSetting('affiliate_id'));
     $full_info = $this->getSetting('full_info') ? 'true' : 'false';
     $max = (int) $this->getSetting('max_widgets');
-    if ($max < 1) { $max = 1; }
+    if ($max < 1) {
+      $max = 1;
+    }
+    if ($affiliate === '') {
+      return [];
+    }
 
+    $entity = $items->getEntity();
+    $cache = [
+      'contexts' => $entity ? $entity->getCacheContexts() : [],
+      'tags' => $entity ? $entity->getCacheTags() : [],
+      'max-age' => $entity ? $entity->getCacheMaxAge() : Cache::PERMANENT,
+    ];
+
+    $cards = [];
     $count = 0;
-    foreach ($items as $delta => $item) {
-      if ($count >= $max) { break; }
+    foreach ($items as $item) {
+      if ($count >= $max) {
+        break;
+      }
       $raw = isset($item->value) ? (string) $item->value : '';
       $ean = preg_replace('/\D+/', '', $raw);
-      if ($ean === '') { continue; }
-
-      $elements[$delta] = [
-        '#type' => 'html_tag',
-        '#tag' => 'script',
-        '#attributes' => [
-          'src' => 'https://bookshop.org/widgets.js',
-          'data-type' => 'featured',
-          'data-full-info' => $full_info,
-          'data-affiliate-id' => $affiliate,
-          'data-sku' => $ean,
-        ],
-        // Ensure this renders even from cache; the external script handles UI.
-        '#cache' => [
-          'contexts' => $items->getEntity()->getCacheContexts(),
-          'tags' => $items->getEntity()->getCacheTags(),
-          'max-age' => $items->getEntity()->getCacheMaxAge(),
-        ],
-      ];
+      if ($ean === '') {
+        continue;
+      }
+      $cards[] = $ean;
       $count++;
     }
 
-    return $elements;
+    if (empty($cards)) {
+      return [];
+    }
+
+    $grid = [
+      '#type' => 'container',
+      '#attributes' => [
+        'class' => ['wlt-bookshop-grid'],
+        'data-wlt-bookshop-grid' => '1',
+        'data-wlt-bookshop-affiliate' => $affiliate,
+        'data-wlt-bookshop-full-info' => $full_info,
+      ],
+      '#attached' => [
+        'library' => ['wlt_bookshop/simple_widgets'],
+      ],
+      '#cache' => $cache,
+    ];
+
+    foreach ($cards as $index => $ean) {
+      $iframe_src = sprintf(
+        'https://bookshop.org/widgets/book/book_featured/%s/%s?full_info=%s',
+        rawurlencode($affiliate),
+        rawurlencode($ean),
+        $full_info
+      );
+
+      $grid[$index] = [
+        '#type' => 'container',
+        '#attributes' => [
+          'class' => ['wlt-bookshop-card'],
+          'data-wlt-bookshop-card' => '1',
+          'data-wlt-bookshop-ean' => $ean,
+        ],
+        'script' => [
+          '#type' => 'html_tag',
+          '#tag' => 'script',
+          '#attributes' => [
+            'src' => 'https://bookshop.org/widgets.js',
+            'data-type' => 'featured',
+            'data-full-info' => $full_info,
+            'data-affiliate-id' => $affiliate,
+            'data-sku' => $ean,
+            'async' => 'async',
+          ],
+        ],
+        'frame' => [
+          '#type' => 'container',
+          '#attributes' => [
+            'class' => ['wlt-bookshop-frame'],
+          ],
+          'iframe' => [
+            '#type' => 'html_tag',
+            '#tag' => 'iframe',
+            '#attributes' => [
+              'src' => $iframe_src,
+              'loading' => 'lazy',
+              'width' => '225',
+              'height' => '520',
+              'style' => 'border:0;width:100%;max-width:320px;',
+              'tabindex' => '-1',
+              'title' => $this->t('Bookshop widget for ISBN @isbn', ['@isbn' => $ean]),
+              'data-wlt-bookshop-iframe' => '1',
+            ],
+          ],
+        ],
+      ];
+    }
+
+    return [0 => $grid];
   }
 
 }
-

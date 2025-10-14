@@ -1,0 +1,9 @@
+simple_widgets:
+  version: 1.x
+  css:
+    component:
+      css/wlt-bookshop-simple.css: {}
+  js:
+    js/wlt-bookshop-simple.js: {}
+  dependencies:
+    - core/drupal
