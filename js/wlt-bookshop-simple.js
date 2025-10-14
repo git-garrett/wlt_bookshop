@@ -171,19 +171,26 @@
 
     return perform('HEAD').then(function (headResult) {
       headResult = finalizeResult(headResult);
-      if (headResult.allow || !headResult.retry) {
-        return headResult;
+      headResult.method = 'HEAD';
+      var finalHead = headResult;
+      if (finalHead.allow || !finalHead.retry) {
+        finalHead.head = headResult;
+        return finalHead;
       }
       return perform('GET').then(function (getResult) {
         getResult.previous = headResult;
-        return finalizeResult(getResult);
+        var finalGet = finalizeResult(getResult);
+        finalGet.method = 'GET';
+        finalGet.head = headResult;
+        return finalGet;
       }).catch(function (error) {
         return finalizeResult({
           method: 'GET',
           verdict: 'exception',
           error: error ? (error.message || String(error)) : 'unknown',
           allow: false,
-          previous: headResult
+          previous: headResult,
+          head: headResult
         });
       });
     }).catch(function (error) {
@@ -191,7 +198,8 @@
         method: 'HEAD',
         verdict: 'exception',
         error: error ? (error.message || String(error)) : 'unknown',
-        allow: false
+        allow: false,
+        head: null
       });
     });
   }
@@ -299,8 +307,14 @@
       appendLog(grid, 'info', 'Checking widget #' + ordinal + ' (EAN ' + ean + ').');
 
       checkIframe(iframe).then(function (result) {
+        if (result.head) {
+          appendLog(grid, 'info', 'Widget #' + ordinal + ' HEAD result: ' + describeResult(result.head) + '.');
+        }
         if (result.previous) {
           appendLog(grid, 'info', 'Widget #' + ordinal + ' previous attempt: ' + describeResult(result.previous) + '.');
+        }
+        if (result.method === 'GET') {
+          appendLog(grid, 'info', 'Widget #' + ordinal + ' GET result: ' + describeResult(result) + '.');
         }
 
         if (result.allow) {
