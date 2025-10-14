@@ -113,39 +113,31 @@ class BookIsbnProcessForm extends FormBase {
         return;
       }
 
-      // Collect all ISBNs from service and append missing to field.
+      // Collect all ISBNs from Open Library and append missing to field.
       $found = [];
-      // Use Bookshop search by title + authors to get EANs.
-      $debugInfo = [];
-      if (method_exists($lookup, 'getEansByTitleAuthor')) {
-        if ($debugEnabled) {
-          $foundList = $lookup->getEansByTitleAuthor($title, $authors, $debugInfo);
+      $debugInfo = $debugEnabled ? [] : NULL;
+      foreach ($authors as $authorName) {
+        if ($authorName === '') {
+          continue;
         }
-        else {
-          $foundList = $lookup->getEansByTitleAuthor($title, $authors);
+        $list = [];
+        if (method_exists($lookup, 'getIsbnsByAuthor')) {
+          $list = $debugEnabled
+            ? $lookup->getIsbnsByAuthor($authorName, $debugInfo)
+            : $lookup->getIsbnsByAuthor($authorName);
         }
-      }
-      else {
-        // Fallback: try author-only OpenLibrary flow if the method is missing.
-        if ($debugEnabled) {
-          $tmp = [];
-          $foundList = [];
-          foreach ($authors as $a) {
-            $list = method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a, $tmp) : array_filter([(string) $lookup->getIsbnByAuthor($a, $tmp)]);
-            $foundList = array_merge($foundList, $list);
-          }
-          $debugInfo = $tmp;
+        elseif (method_exists($lookup, 'getIsbnByAuthor')) {
+          $single = $debugEnabled
+            ? $lookup->getIsbnByAuthor($authorName, $debugInfo)
+            : $lookup->getIsbnByAuthor($authorName);
+          $list = $single ? [$single] : [];
         }
-        else {
-          $foundList = [];
-          foreach ($authors as $a) {
-            $list = method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a) : array_filter([(string) $lookup->getIsbnByAuthor($a)]);
-            $foundList = array_merge($foundList, $list);
+        foreach ((array) $list as $isbn) {
+          $normalized = \wlt_bookshop_normalize_isbn((string) $isbn);
+          if ($normalized) {
+            $found[$normalized] = TRUE;
           }
         }
-      }
-      foreach ((array) $foundList as $isbn) {
-        $found[(string) $isbn] = TRUE;
       }
 
       // Merge with existing values, dedupe.
@@ -245,22 +237,29 @@ class BookIsbnProcessForm extends FormBase {
 
       // Gather all ISBNs and set multi-value field with de-duplication.
       $found = [];
-      $debugInfo = [];
-      if (method_exists($lookup, 'getEansByTitleAuthor')) {
-        $foundList = $debugEnabled ? $lookup->getEansByTitleAuthor($title, $authors, $debugInfo) : $lookup->getEansByTitleAuthor($title, $authors);
-      }
-      else {
-        // Fallback to author-only flow when new method is missing.
-        $foundList = [];
-        foreach ($authors as $a) {
-          $list = $debugEnabled
-            ? (method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a, $debugInfo) : array_filter([(string) $lookup->getIsbnByAuthor($a, $debugInfo)]))
-            : (method_exists($lookup, 'getIsbnsByAuthor') ? $lookup->getIsbnsByAuthor($a) : array_filter([(string) $lookup->getIsbnByAuthor($a)]));
-          $foundList = array_merge($foundList, $list);
+      $debugInfo = $debugEnabled ? [] : NULL;
+      foreach ($authors as $authorName) {
+        if ($authorName === '') {
+          continue;
         }
-      }
-      foreach ((array) $foundList as $isbn) {
-        $found[(string) $isbn] = TRUE;
+        $list = [];
+        if (method_exists($lookup, 'getIsbnsByAuthor')) {
+          $list = $debugEnabled
+            ? $lookup->getIsbnsByAuthor($authorName, $debugInfo)
+            : $lookup->getIsbnsByAuthor($authorName);
+        }
+        elseif (method_exists($lookup, 'getIsbnByAuthor')) {
+          $single = $debugEnabled
+            ? $lookup->getIsbnByAuthor($authorName, $debugInfo)
+            : $lookup->getIsbnByAuthor($authorName);
+          $list = $single ? [$single] : [];
+        }
+        foreach ((array) $list as $isbn) {
+          $normalized = \wlt_bookshop_normalize_isbn((string) $isbn);
+          if ($normalized) {
+            $found[$normalized] = TRUE;
+          }
+        }
       }
       if (!empty($found)) {
         // Existing values (if any) are not expected here due to query, but handle anyway.

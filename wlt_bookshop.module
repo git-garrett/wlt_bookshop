@@ -56,12 +56,12 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
     }
 
     foreach ($isbns as $isbn) {
-      $sanitized = preg_replace('/\D+/', '', (string) $isbn);
-      if ($sanitized === '') {
+      $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
+      if (!$normalized) {
         continue;
       }
-      if (!isset($collected[$sanitized])) {
-        $collected[$sanitized] = TRUE;
+      if (!isset($collected[$normalized])) {
+        $collected[$normalized] = TRUE;
       }
       if (count($collected) >= 12) {
         break 2;
@@ -93,36 +93,41 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
   if ($node->bundle() !== 'book_review') {
     return NULL;
   }
-  // Resolve title and first author for a simple single-value helper.
-  $title = '';
-  if ($node->hasField('field_sidebartitle')) {
-    $title = trim((string) $node->get('field_sidebartitle')->value);
+  $authors = wlt_bookshop_collect_author_names($node);
+  if (empty($authors)) {
+    return NULL;
   }
-  if ($title === '') {
-    $title = (string) $node->label();
-  }
-  $author = NULL;
-  if ($node->hasField('field_author') && !$node->get('field_author')->isEmpty()) {
-    foreach ($node->get('field_author') as $item) {
-      if (isset($item->entity) && $item->entity) {
-        $label = trim((string) $item->entity->label());
-        if ($label !== '') { $author = $label; break; }
-      }
-      if (isset($item->value)) {
-        $val = trim((string) $item->value);
-        if ($val !== '') { $author = $val; break; }
-      }
-    }
-  }
-  if ($title === '' && !$author) { return NULL; }
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
-  if (method_exists($lookup, 'getEansByTitleAuthor')) {
-    $list = $lookup->getEansByTitleAuthor($title, $author ? [$author] : []);
-    return $list[0] ?? NULL;
+  $collected = [];
+  foreach ($authors as $author) {
+    if ($author === '') {
+      continue;
+    }
+    $list = [];
+    if (method_exists($lookup, 'getIsbnsByAuthor')) {
+      $list = $lookup->getIsbnsByAuthor($author);
+    }
+    elseif (method_exists($lookup, 'getIsbnByAuthor')) {
+      $single = $lookup->getIsbnByAuthor($author);
+      $list = $single ? [$single] : [];
+    }
+    foreach ((array) $list as $isbn) {
+      $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
+      if ($normalized) {
+        $collected[$normalized] = TRUE;
+      }
+    }
+    if (!empty($collected)) {
+      break;
+    }
   }
-  return NULL;
+  if (empty($collected)) {
+    return NULL;
+  }
+  $values = array_keys($collected);
+  return $values[0] ?? NULL;
 }
 
 /**
@@ -167,4 +172,44 @@ function wlt_bookshop_sanitize_text(string $text): string {
   $text = html_entity_decode($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
   $text = strip_tags($text);
   return trim(preg_replace('/\s+/u', ' ', $text));
+}
+
+/**
+ * Normalize raw ISBN input to a 13-digit numeric string when possible.
+ *
+ * @param string $isbn
+ *   Raw ISBN/ISBN-13 candidate.
+ *
+ * @return string|null
+ *   Normalized 13-digit string or NULL if normalization failed.
+ */
+function wlt_bookshop_normalize_isbn(string $isbn): ?string {
+  $isbn = strtoupper(trim($isbn));
+  if ($isbn === '') {
+    return NULL;
+  }
+  // Allow digits and trailing X for ISBN-10.
+  $filtered = preg_replace('/[^0-9X]/', '', $isbn);
+  if ($filtered === '') {
+    return NULL;
+  }
+  if (strlen($filtered) === 13 && ctype_digit($filtered)) {
+    return $filtered;
+  }
+  if (strlen($filtered) === 10) {
+    $core = substr($filtered, 0, 9);
+    if (!ctype_digit($core)) {
+      return NULL;
+    }
+    $ean = '978' . $core;
+    $sum = 0;
+    for ($i = 0; $i < 12; $i++) {
+      $digit = (int) $ean[$i];
+      $sum += ($i % 2 === 0) ? $digit : $digit * 3;
+    }
+    $check = (10 - ($sum % 10)) % 10;
+    return $ean . $check;
+  }
+  // Return 13-digit string if we can infer it, otherwise drop.
+  return NULL;
 }
