@@ -169,37 +169,16 @@
       });
     }
 
-    return perform('HEAD').then(function (headResult) {
-      headResult = finalizeResult(headResult);
-      headResult.method = 'HEAD';
-      var finalHead = headResult;
-      if (finalHead.allow || !finalHead.retry) {
-        finalHead.head = headResult;
-        return finalHead;
-      }
-      return perform('GET').then(function (getResult) {
-        getResult.previous = headResult;
-        var finalGet = finalizeResult(getResult);
-        finalGet.method = 'GET';
-        finalGet.head = headResult;
-        return finalGet;
-      }).catch(function (error) {
-        return finalizeResult({
-          method: 'GET',
-          verdict: 'exception',
-          error: error ? (error.message || String(error)) : 'unknown',
-          allow: false,
-          previous: headResult,
-          head: headResult
-        });
-      });
+    return perform('GET').then(function (getResult) {
+      var finalGet = finalizeResult(getResult);
+      finalGet.method = 'GET';
+      return finalGet;
     }).catch(function (error) {
       return finalizeResult({
-        method: 'HEAD',
+        method: 'GET',
         verdict: 'exception',
         error: error ? (error.message || String(error)) : 'unknown',
-        allow: false,
-        head: null
+        allow: false
       });
     });
   }
@@ -307,15 +286,7 @@
       appendLog(grid, 'info', 'Checking widget #' + ordinal + ' (EAN ' + ean + ').');
 
       checkIframe(iframe).then(function (result) {
-        if (result.head) {
-          appendLog(grid, 'info', 'Widget #' + ordinal + ' HEAD result: ' + describeResult(result.head) + '.');
-        }
-        if (result.previous) {
-          appendLog(grid, 'info', 'Widget #' + ordinal + ' previous attempt: ' + describeResult(result.previous) + '.');
-        }
-        if (result.method === 'GET') {
-          appendLog(grid, 'info', 'Widget #' + ordinal + ' GET result: ' + describeResult(result) + '.');
-        }
+        appendLog(grid, 'info', 'Widget #' + ordinal + ' GET result: ' + describeResult(result) + '.');
 
         if (result.allow) {
           kept += 1;
