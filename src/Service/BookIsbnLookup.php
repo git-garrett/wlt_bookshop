@@ -366,6 +366,8 @@ class BookIsbnLookup {
     }
 
     $results = [];
+    $sequence = 0;
+    $loadedEditions = [];
     if (is_array($debug)) {
       $debug['author'] = $author;
       $debug['search'] = [
@@ -389,10 +391,11 @@ class BookIsbnLookup {
       if ($workKey !== '') {
         $seenWorks[$workKey] = TRUE;
       }
+      $normalizedWork = $this->normalizeWorkKey($workKey);
       $coverKey = !empty($doc['cover_edition_key']) ? (string) $doc['cover_edition_key'] : '';
 
       if ($coverKey !== '') {
-        $this->appendEditionIsbns($coverKey, $results, $debug, TRUE);
+        $this->appendEditionIsbns($coverKey, $normalizedWork, $results, $sequence, $debug, $loadedEditions, TRUE);
       }
 
       if (!empty($doc['edition_key'])) {
@@ -407,31 +410,31 @@ class BookIsbnLookup {
           if ($editionKey === '' || $editionKey === $coverKey) {
             continue;
           }
-          $this->appendEditionIsbns($editionKey, $results, $debug);
+          $this->appendEditionIsbns($editionKey, $normalizedWork, $results, $sequence, $debug, $loadedEditions, FALSE);
         }
       }
 
       if ($workKey !== '') {
-        $this->appendWorkEditionIsbns($workKey, $coverKey, $results, $debug);
+        $this->appendWorkEditionIsbns($workKey, $coverKey, $results, $sequence, $debug, $loadedEditions);
       }
     }
 
-    $ordered = array_keys($results);
+    $final = $this->finalizeIsbnResults($results);
     if (is_array($debug)) {
-      $debug['found_isbns'] = $ordered;
+      $debug['found_isbns'] = $final;
     }
-    return $ordered;
+    return $final;
   }
 
   /**
    * Fetch the JSON for a specific edition and append ISBNs.
    */
-  protected function appendEditionIsbns(string $editionKey, array &$results, ?array &$debug, bool $preferred = FALSE): void {
-    static $loaded = [];
-    if ($editionKey === '' || isset($loaded[$editionKey])) {
+  protected function appendEditionIsbns(string $editionKey, string $workKey, array &$results, int &$sequence, ?array &$debug, array &$loadedEditions, bool $preferred = FALSE): void {
+    $editionKey = trim($editionKey);
+    if ($editionKey === '' || isset($loadedEditions[$editionKey])) {
       return;
     }
-    $loaded[$editionKey] = TRUE;
+    $loadedEditions[$editionKey] = TRUE;
 
     $editionUrl = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
     try {
@@ -478,6 +481,9 @@ class BookIsbnLookup {
       return;
     }
 
+    $normalizedWork = $this->normalizeWorkKey($workKey, $payload['works'] ?? [], $editionKey);
+    $format = $this->determineFormat($payload);
+
     $isbns = [];
     if (!empty($payload['isbn_13']) && is_array($payload['isbn_13'])) {
       $isbns = array_merge($isbns, array_map('strval', $payload['isbn_13']));
@@ -487,18 +493,14 @@ class BookIsbnLookup {
     }
 
     foreach ($isbns as $isbn) {
-      if ($isbn === '') {
-        continue;
-      }
-      if (!isset($results[$isbn])) {
-        $results[$isbn] = $preferred ? 2 : 1;
-      }
+      $this->storeIsbnEntry($isbn, $normalizedWork, $format, $preferred, $results, $sequence);
     }
 
     if (is_array($debug)) {
       $entry = [
         'edition' => $editionKey,
         'url' => $editionUrl,
+        'format' => $format,
       ];
       if (!empty($payload['isbn_13'])) {
         $entry['isbn_13'] = $payload['isbn_13'];
@@ -516,7 +518,7 @@ class BookIsbnLookup {
   /**
    * Fetch editions for a work and append any additional ISBNs found.
    */
-  protected function appendWorkEditionIsbns(string $workKey, string $coverKey, array &$results, ?array &$debug): void {
+  protected function appendWorkEditionIsbns(string $workKey, string $coverKey, array &$results, int &$sequence, ?array &$debug, array &$loadedEditions): void {
     $workKey = trim($workKey);
     if ($workKey === '') {
       return;
@@ -559,6 +561,7 @@ class BookIsbnLookup {
       return;
     }
 
+    $normalizedWork = $this->normalizeWorkKey($workKey);
     foreach ($payload['entries'] as $entry) {
       if (!is_array($entry)) {
         continue;
@@ -567,9 +570,9 @@ class BookIsbnLookup {
         $editionKey = ltrim($entry['key'], '/');
         $editionKey = preg_replace('/^books\//', '', $editionKey);
         if ($editionKey !== '' && $editionKey !== $coverKey) {
-          $this->appendEditionIsbns($editionKey, $results, $debug);
-          continue;
+          $this->appendEditionIsbns($editionKey, $normalizedWork, $results, $sequence, $debug, $loadedEditions, FALSE);
         }
+        continue;
       }
 
       $isbns = [];
@@ -579,12 +582,177 @@ class BookIsbnLookup {
       if (!empty($entry['isbn_10']) && is_array($entry['isbn_10'])) {
         $isbns = array_merge($isbns, array_map('strval', $entry['isbn_10']));
       }
+      if (empty($isbns)) {
+        continue;
+      }
+      $format = $this->determineFormat($entry);
       foreach ($isbns as $isbn) {
-        if ($isbn !== '' && !isset($results[$isbn])) {
-          $results[$isbn] = 1;
+        $this->storeIsbnEntry($isbn, $normalizedWork, $format, FALSE, $results, $sequence);
+      }
+    }
+  }
+
+  protected function normalizeWorkKey(?string $workKey, array $works = [], ?string $editionKey = NULL): string {
+    if (is_string($workKey) && $workKey !== '') {
+      return $workKey;
+    }
+    foreach ($works as $workRef) {
+      if (is_array($workRef) && !empty($workRef['key'])) {
+        return (string) $workRef['key'];
+      }
+      if (is_string($workRef) && $workRef !== '') {
+        return $workRef;
+      }
+    }
+    if ($editionKey !== NULL && $editionKey !== '') {
+      return '_edition:' . $editionKey;
+    }
+    static $fallback = 0;
+    $fallback++;
+    return '_unknown:' . $fallback;
+  }
+
+  protected function determineFormat(array $data): string {
+    $fragments = [];
+    foreach (['physical_format', 'physical_format_detail', 'medium'] as $key) {
+      if (!empty($data[$key]) && is_string($data[$key])) {
+        $fragments[] = mb_strtolower($data[$key]);
+      }
+    }
+    foreach (['title', 'subtitle', 'edition_name'] as $key) {
+      if (!empty($data[$key]) && is_string($data[$key])) {
+        $fragments[] = mb_strtolower($data[$key]);
+      }
+    }
+    if (!empty($data['subjects']) && is_array($data['subjects'])) {
+      foreach ($data['subjects'] as $subject) {
+        if (is_string($subject)) {
+          $fragments[] = mb_strtolower($subject);
         }
       }
     }
+    if (!empty($data['physical_description']) && is_string($data['physical_description'])) {
+      $fragments[] = mb_strtolower($data['physical_description']);
+    }
+
+    $text = trim(implode(' ', $fragments));
+    if ($text === '') {
+      return 'other';
+    }
+
+    if (str_contains($text, 'paperback') || str_contains($text, 'softcover') || str_contains($text, 'soft cover') || str_contains($text, 'softback') || str_contains($text, 'trade paper')) {
+      return 'paperback';
+    }
+    if (str_contains($text, 'hardcover') || str_contains($text, 'hardback') || str_contains($text, 'hard cover') || str_contains($text, 'cloth') || str_contains($text, 'library binding')) {
+      return 'hardcover';
+    }
+    if (str_contains($text, 'audio') || str_contains($text, 'sound recording') || str_contains($text, 'cd') || str_contains($text, 'mp3') || str_contains($text, 'spoken word')) {
+      return 'audio';
+    }
+    return 'other';
+  }
+
+  protected function formatScore(string $format): int {
+    return match ($format) {
+      'paperback' => 3,
+      'hardcover' => 2,
+      'audio' => 1,
+      default => 2,
+    };
+  }
+
+  protected function storeIsbnEntry(string $isbn, string $workKey, string $format, bool $preferred, array &$results, int &$sequence): void {
+    $normalized = preg_replace('/[^0-9X]/i', '', $isbn);
+    if ($normalized === '') {
+      return;
+    }
+    $entry = [
+      'isbn' => $normalized,
+      'score' => $this->formatScore($format),
+      'order' => $sequence++,
+      'preferred' => $preferred,
+      'format' => $format,
+      'work' => $workKey,
+    ];
+
+    if (!isset($results[$normalized])) {
+      $results[$normalized] = $entry;
+      return;
+    }
+
+    if ($this->shouldReplaceResult($results[$normalized], $entry)) {
+      $entry['order'] = min($entry['order'], $results[$normalized]['order']);
+      $results[$normalized] = $entry;
+    }
+  }
+
+  protected function shouldReplaceResult(array $existing, array $candidate): bool {
+    if ($candidate['score'] > $existing['score']) {
+      return TRUE;
+    }
+    if ($candidate['score'] < $existing['score']) {
+      return FALSE;
+    }
+    if ($candidate['preferred'] && !$existing['preferred']) {
+      return TRUE;
+    }
+    if (!$candidate['preferred'] && $existing['preferred']) {
+      return FALSE;
+    }
+    return $candidate['order'] < $existing['order'];
+  }
+
+  protected function finalizeIsbnResults(array $results): array {
+    if (empty($results)) {
+      return [];
+    }
+
+    $byWork = [];
+    foreach ($results as $isbn => $info) {
+      $workKey = $info['work'] ?: '_unknown';
+      if (!isset($byWork[$workKey])) {
+        $byWork[$workKey] = [
+          'entries' => [],
+          'minOrder' => $info['order'],
+        ];
+      }
+      $byWork[$workKey]['entries'][$isbn] = $info;
+      $byWork[$workKey]['minOrder'] = min($byWork[$workKey]['minOrder'], $info['order']);
+    }
+
+    foreach ($byWork as $workKey => $data) {
+      $entries = $data['entries'];
+      $maxScore = max(array_column($entries, 'score'));
+      if ($maxScore >= 3) {
+        $entries = array_filter($entries, static fn($entry) => $entry['score'] >= 3);
+      }
+      elseif ($maxScore >= 2) {
+        $entries = array_filter($entries, static fn($entry) => $entry['score'] >= 2);
+      }
+      uasort($entries, static function (array $a, array $b): int {
+        if ($a['score'] !== $b['score']) {
+          return $b['score'] <=> $a['score'];
+        }
+        if ($a['preferred'] !== $b['preferred']) {
+          return $a['preferred'] ? -1 : 1;
+        }
+        return $a['order'] <=> $b['order'];
+      });
+      $byWork[$workKey]['entries'] = $entries;
+    }
+
+    uasort($byWork, static function (array $a, array $b): int {
+      return $a['minOrder'] <=> $b['minOrder'];
+    });
+
+    $final = [];
+    foreach ($byWork as $workData) {
+      foreach ($workData['entries'] as $isbn => $info) {
+        $final[] = $isbn;
+      }
+    }
+
+    return $final;
   }
 
   /**
