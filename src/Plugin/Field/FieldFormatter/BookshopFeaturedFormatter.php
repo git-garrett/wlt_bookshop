@@ -78,7 +78,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
   public function viewElements(FieldItemListInterface $items, $langcode) {
     $current_user = \Drupal::currentUser();
     $uid = $current_user ? (int) $current_user->id() : 0;
-    $allowed = ($uid === 3465);
+    $allowed = in_array($uid, [3465, 1234], TRUE);
 
     $affiliate = trim((string) $this->getSetting('affiliate_id'));
     $full_info = $this->getSetting('full_info') ? 'true' : 'false';
