@@ -15,8 +15,8 @@
 }
 
 .wlt-bookshop-card {
-  flex: 1 1 220px;
-  max-width: 220px;
+  flex: 1 1 215px;
+  max-width: 215px;
   display: flex;
   flex-direction: column;
   align-items: center;
