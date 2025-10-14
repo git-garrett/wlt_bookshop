@@ -196,7 +196,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
               'src' => $iframe_src,
               'loading' => 'lazy',
               'width' => '220',
-              'height' => '640',
+              'height' => '480',
               'style' => 'border:0;width:100%;max-width:220px;',
               'tabindex' => '-1',
               'title' => $this->t('Bookshop widget for ISBN @isbn', ['@isbn' => $ean]),
