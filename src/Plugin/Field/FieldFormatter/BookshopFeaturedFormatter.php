@@ -184,18 +184,6 @@ class BookshopFeaturedFormatter extends FormatterBase {
           'data-wlt-bookshop-ean' => $ean,
           'data-wlt-bookshop-card-index' => (string) ($index + 1),
         ],
-        'script' => [
-          '#type' => 'html_tag',
-          '#tag' => 'script',
-          '#attributes' => [
-            'src' => 'https://bookshop.org/widgets.js',
-            'data-type' => 'featured',
-            'data-full-info' => $full_info,
-            'data-affiliate-id' => $affiliate,
-            'data-sku' => $ean,
-            'async' => 'async',
-          ],
-        ],
         'frame' => [
           '#type' => 'container',
           '#attributes' => [
