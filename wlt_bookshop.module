@@ -292,7 +292,7 @@ function wlt_bookshop_link_author_in_html(string $html, string $author, string $
     libxml_use_internal_errors($internal);
     // Fallback simple replacement.
     $pattern = '/' . preg_quote($author, '/') . '/iu';
-    $replacement = '<a href="' . Html::escape($url) . '" class="wlt-bookshop-author-link">$0</a>';
+    $replacement = '<a href="' . Html::escape($url) . '" class="wlt-bookshop-author-link" target="_blank" rel="noopener noreferrer">$0</a>';
     return preg_replace($pattern, $replacement, $html, 1) ?? $html;
   }
 
@@ -327,6 +327,8 @@ function wlt_bookshop_link_author_in_html(string $html, string $author, string $
     $link = $dom->createElement('a');
     $link->setAttribute('href', $url);
     $link->setAttribute('class', 'wlt-bookshop-author-link');
+    $link->setAttribute('target', '_blank');
+    $link->setAttribute('rel', 'noopener noreferrer');
     $link->appendChild($dom->createTextNode($match));
     $parent->insertBefore($link, $textNode);
 

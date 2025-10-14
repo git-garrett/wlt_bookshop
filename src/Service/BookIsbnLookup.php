@@ -365,7 +365,6 @@ class BookIsbnLookup {
       return [];
     }
 
-    $seen = [];
     $results = [];
     if (is_array($debug)) {
       $debug['author'] = $author;
@@ -374,133 +373,211 @@ class BookIsbnLookup {
         'query' => $query,
         'num_docs' => isset($data['numFound']) ? (int) $data['numFound'] : count($data['docs']),
       ];
-      $debug['candidate_edition_keys'] = [];
       $debug['editions'] = [];
+      $debug['works'] = [];
     }
-    foreach ($data['docs'] as $doc) {
-      // Build a list of candidate edition keys (cover_edition_key and edition_key[]).
-      $candidateKeys = [];
-      if (!empty($doc['cover_edition_key'])) {
-        $candidateKeys[] = (string) $doc['cover_edition_key'];
-      }
-      if (!empty($doc['edition_key'])) {
-        if (is_array($doc['edition_key'])) {
-          foreach ($doc['edition_key'] as $ek) {
-            $ek = (string) $ek;
-            if ($ek !== '') {
-              $candidateKeys[] = $ek;
-            }
-          }
-        }
-        elseif (is_string($doc['edition_key'])) {
-          $candidateKeys[] = $doc['edition_key'];
-        }
-      }
 
-      if (empty($candidateKeys)) {
+    foreach ($data['docs'] as $doc) {
+      if (!is_array($doc)) {
         continue;
       }
+      $workKey = isset($doc['key']) ? (string) $doc['key'] : '';
+      $coverKey = !empty($doc['cover_edition_key']) ? (string) $doc['cover_edition_key'] : '';
 
-      if (is_array($debug)) {
-        foreach ($candidateKeys as $ek) {
-          $debug['candidate_edition_keys'][$ek] = TRUE;
+      if ($coverKey !== '') {
+        $this->appendEditionIsbns($coverKey, $results, $debug, TRUE);
+      }
+
+      if (!empty($doc['edition_key'])) {
+        $editionKeys = [];
+        if (is_array($doc['edition_key'])) {
+          $editionKeys = array_map('strval', $doc['edition_key']);
+        }
+        elseif (is_string($doc['edition_key'])) {
+          $editionKeys = [(string) $doc['edition_key']];
+        }
+        foreach ($editionKeys as $editionKey) {
+          if ($editionKey === '' || $editionKey === $coverKey) {
+            continue;
+          }
+          $this->appendEditionIsbns($editionKey, $results, $debug);
         }
       }
 
-      foreach ($candidateKeys as $editionKey) {
-        if ($editionKey === '' || isset($seen[$editionKey])) {
-          continue;
-        }
-        $seen[$editionKey] = TRUE;
-
-        $editionUrl = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
-        try {
-          $editionResponse = $this->httpClient->request('GET', $editionUrl, [
-            'timeout' => 8,
-            'connect_timeout' => 4,
-          ]);
-        }
-        catch (\Throwable $e) {
-          $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
-            '@edition' => $editionKey,
-            '@message' => $e->getMessage(),
-          ]);
-          if (is_array($debug)) {
-            $debug['editions'][] = [
-              'edition' => $editionKey,
-              'url' => $editionUrl,
-              'error' => $e->getMessage(),
-            ];
-          }
-          continue;
-        }
-
-        if ($editionResponse->getStatusCode() !== 200) {
-          $this->logger->notice('Open Library edition non-200 (@code) for @edition.', [
-            '@code' => $editionResponse->getStatusCode(),
-            '@edition' => $editionKey,
-          ]);
-          if (is_array($debug)) {
-            $debug['editions'][] = [
-              'edition' => $editionKey,
-              'url' => $editionUrl,
-              'status' => $editionResponse->getStatusCode(),
-            ];
-          }
-          continue;
-        }
-
-        $edition = json_decode((string) $editionResponse->getBody(), TRUE);
-        if (!is_array($edition)) {
-          if (is_array($debug)) {
-            $debug['editions'][] = [
-              'edition' => $editionKey,
-              'url' => $editionUrl,
-              'decoded' => 'invalid',
-            ];
-          }
-          continue;
-        }
-
-        // Prefer ISBN-13, but collect both sets.
-        if (!empty($edition['isbn_13']) && is_array($edition['isbn_13'])) {
-          foreach ($edition['isbn_13'] as $isbn) {
-            $isbn = (string) $isbn;
-            if ($isbn !== '') {
-              $results[$isbn] = TRUE;
-            }
-          }
-        }
-        if (!empty($edition['isbn_10']) && is_array($edition['isbn_10'])) {
-          foreach ($edition['isbn_10'] as $isbn) {
-            $isbn = (string) $isbn;
-            if ($isbn !== '') {
-              $results[$isbn] = TRUE;
-            }
-          }
-        }
-
-        if (is_array($debug)) {
-          $debugEntry = [
-            'edition' => $editionKey,
-            'url' => $editionUrl,
-          ];
-          if (!empty($edition['isbn_13'])) {
-            $debugEntry['isbn_13'] = $edition['isbn_13'];
-          }
-          if (!empty($edition['isbn_10'])) {
-            $debugEntry['isbn_10'] = $edition['isbn_10'];
-          }
-          $debug['editions'][] = $debugEntry;
-        }
+      if ($workKey !== '') {
+        $this->appendWorkEditionIsbns($workKey, $coverKey, $results, $debug);
       }
     }
 
-    $all = array_keys($results);
+    $ordered = array_keys($results);
     if (is_array($debug)) {
-      $debug['found_isbns'] = $all;
+      $debug['found_isbns'] = $ordered;
     }
-    return $all;
+    return $ordered;
+  }
+
+  /**
+   * Fetch the JSON for a specific edition and append ISBNs.
+   */
+  protected function appendEditionIsbns(string $editionKey, array &$results, ?array &$debug, bool $preferred = FALSE): void {
+    static $loaded = [];
+    if ($editionKey === '' || isset($loaded[$editionKey])) {
+      return;
+    }
+    $loaded[$editionKey] = TRUE;
+
+    $editionUrl = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
+    try {
+      $response = $this->httpClient->request('GET', $editionUrl, [
+        'timeout' => 8,
+        'connect_timeout' => 4,
+      ]);
+    }
+    catch (\Throwable $e) {
+      $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
+        '@edition' => $editionKey,
+        '@message' => $e->getMessage(),
+      ]);
+      if (is_array($debug)) {
+        $debug['editions'][] = [
+          'edition' => $editionKey,
+          'url' => $editionUrl,
+          'error' => $e->getMessage(),
+        ];
+      }
+      return;
+    }
+
+    if ($response->getStatusCode() !== 200) {
+      if (is_array($debug)) {
+        $debug['editions'][] = [
+          'edition' => $editionKey,
+          'url' => $editionUrl,
+          'status' => $response->getStatusCode(),
+        ];
+      }
+      return;
+    }
+
+    $payload = json_decode((string) $response->getBody(), TRUE);
+    if (!is_array($payload)) {
+      if (is_array($debug)) {
+        $debug['editions'][] = [
+          'edition' => $editionKey,
+          'url' => $editionUrl,
+          'decoded' => 'invalid',
+        ];
+      }
+      return;
+    }
+
+    $isbns = [];
+    if (!empty($payload['isbn_13']) && is_array($payload['isbn_13'])) {
+      $isbns = array_merge($isbns, array_map('strval', $payload['isbn_13']));
+    }
+    if (!empty($payload['isbn_10']) && is_array($payload['isbn_10'])) {
+      $isbns = array_merge($isbns, array_map('strval', $payload['isbn_10']));
+    }
+
+    foreach ($isbns as $isbn) {
+      if ($isbn === '') {
+        continue;
+      }
+      if (!isset($results[$isbn])) {
+        $results[$isbn] = $preferred ? 2 : 1;
+      }
+    }
+
+    if (is_array($debug)) {
+      $entry = [
+        'edition' => $editionKey,
+        'url' => $editionUrl,
+      ];
+      if (!empty($payload['isbn_13'])) {
+        $entry['isbn_13'] = $payload['isbn_13'];
+      }
+      if (!empty($payload['isbn_10'])) {
+        $entry['isbn_10'] = $payload['isbn_10'];
+      }
+      if ($preferred) {
+        $entry['preferred'] = TRUE;
+      }
+      $debug['editions'][] = $entry;
+    }
+  }
+
+  /**
+   * Fetch editions for a work and append any additional ISBNs found.
+   */
+  protected function appendWorkEditionIsbns(string $workKey, string $coverKey, array &$results, ?array &$debug): void {
+    $workKey = trim($workKey);
+    if ($workKey === '') {
+      return;
+    }
+    $url = 'https://openlibrary.org' . $workKey . '/editions.json?limit=500';
+    try {
+      $response = $this->httpClient->request('GET', $url, [
+        'timeout' => 10,
+        'connect_timeout' => 4,
+      ]);
+    }
+    catch (\Throwable $e) {
+      $this->logger->notice('Open Library editions fetch failed for @work: @message', [
+        '@work' => $workKey,
+        '@message' => $e->getMessage(),
+      ]);
+      if (is_array($debug)) {
+        $debug['works'][] = [
+          'work' => $workKey,
+          'url' => $url,
+          'error' => $e->getMessage(),
+        ];
+      }
+      return;
+    }
+
+    if ($response->getStatusCode() !== 200) {
+      if (is_array($debug)) {
+        $debug['works'][] = [
+          'work' => $workKey,
+          'url' => $url,
+          'status' => $response->getStatusCode(),
+        ];
+      }
+      return;
+    }
+
+    $payload = json_decode((string) $response->getBody(), TRUE);
+    if (!is_array($payload) || empty($payload['entries']) || !is_array($payload['entries'])) {
+      return;
+    }
+
+    foreach ($payload['entries'] as $entry) {
+      if (!is_array($entry)) {
+        continue;
+      }
+      if (!empty($entry['key']) && is_string($entry['key'])) {
+        $editionKey = ltrim($entry['key'], '/');
+        $editionKey = preg_replace('/^books\//', '', $editionKey);
+        if ($editionKey !== '' && $editionKey !== $coverKey) {
+          $this->appendEditionIsbns($editionKey, $results, $debug);
+          continue;
+        }
+      }
+
+      $isbns = [];
+      if (!empty($entry['isbn_13']) && is_array($entry['isbn_13'])) {
+        $isbns = array_merge($isbns, array_map('strval', $entry['isbn_13']));
+      }
+      if (!empty($entry['isbn_10']) && is_array($entry['isbn_10'])) {
+        $isbns = array_merge($isbns, array_map('strval', $entry['isbn_10']));
+      }
+      foreach ($isbns as $isbn) {
+        if ($isbn !== '' && !isset($results[$isbn])) {
+          $results[$isbn] = 1;
+        }
+      }
+    }
   }
 
   /**
