@@ -77,9 +77,8 @@ class BookshopFeaturedFormatter extends FormatterBase {
    */
   public function viewElements(FieldItemListInterface $items, $langcode) {
     $current_user = \Drupal::currentUser();
-    if (!$current_user || (int) $current_user->id() !== 3465) {
-      return [];
-    }
+    $uid = $current_user ? (int) $current_user->id() : 0;
+    $allowed = ($uid === 3465);
 
     $affiliate = trim((string) $this->getSetting('affiliate_id'));
     $full_info = $this->getSetting('full_info') ? 'true' : 'false';
@@ -113,10 +112,6 @@ class BookshopFeaturedFormatter extends FormatterBase {
       $count++;
     }
 
-    if (empty($cards)) {
-      return [];
-    }
-
     $grid = [
       '#type' => 'container',
       '#attributes' => [
@@ -124,12 +119,55 @@ class BookshopFeaturedFormatter extends FormatterBase {
         'data-wlt-bookshop-grid' => '1',
         'data-wlt-bookshop-affiliate' => $affiliate,
         'data-wlt-bookshop-full-info' => $full_info,
+        'data-wlt-bookshop-card-count' => (string) count($cards),
+        'data-wlt-bookshop-permission' => $allowed ? 'allowed' : 'denied',
+        'data-wlt-bookshop-uid' => (string) $uid,
+        'data-wlt-bookshop-debug-enabled' => '1',
+        'data-wlt-bookshop-empty' => count($cards) === 0 ? '1' : '0',
       ],
       '#attached' => [
         'library' => ['wlt_bookshop/simple_widgets'],
       ],
       '#cache' => $cache,
     ];
+
+    $grid['debug'] = [
+      '#type' => 'container',
+      '#attributes' => [
+        'class' => ['wlt-bookshop-debug'],
+        'data-wlt-bookshop-debug' => '1',
+      ],
+      'title' => [
+        '#type' => 'html_tag',
+        '#tag' => 'div',
+        '#value' => $this->t('Bookshop Debug Console'),
+        '#attributes' => [
+          'class' => ['wlt-bookshop-debug__title'],
+        ],
+      ],
+      'log' => [
+        '#type' => 'html_tag',
+        '#tag' => 'ul',
+        '#attributes' => [
+          'class' => ['wlt-bookshop-debug__log'],
+          'data-wlt-bookshop-debug-log' => '1',
+          'aria-live' => 'polite',
+        ],
+        '#value' => '',
+      ],
+    ];
+
+    $grid['cards'] = [
+      '#type' => 'container',
+      '#attributes' => [
+        'class' => ['wlt-bookshop-cards'],
+        'data-wlt-bookshop-cards' => '1',
+      ],
+    ];
+
+    if (!$allowed) {
+      return [0 => $grid];
+    }
 
     foreach ($cards as $index => $ean) {
       $iframe_src = sprintf(
@@ -139,12 +177,13 @@ class BookshopFeaturedFormatter extends FormatterBase {
         $full_info
       );
 
-      $grid[$index] = [
+      $grid['cards'][$index] = [
         '#type' => 'container',
         '#attributes' => [
           'class' => ['wlt-bookshop-card'],
           'data-wlt-bookshop-card' => '1',
           'data-wlt-bookshop-ean' => $ean,
+          'data-wlt-bookshop-card-index' => (string) ($index + 1),
         ],
         'script' => [
           '#type' => 'html_tag',

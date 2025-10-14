@@ -1,9 +1,17 @@
 .wlt-bookshop-grid {
+  margin-top: 2rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+.wlt-bookshop-cards {
   display: flex;
   flex-wrap: wrap;
   gap: 1.5rem;
   justify-content: center;
-  margin-top: 2rem;
 }
 
 .wlt-bookshop-card {
@@ -12,6 +20,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  background: #f8fafc;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.2);
 }
 
 .wlt-bookshop-frame {
@@ -22,6 +34,68 @@
   width: 100%;
   min-height: 520px;
   border: 0;
+}
+
+.wlt-bookshop-debug {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.85rem;
+  background: #111827;
+  color: #f9fafb;
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.2);
+}
+
+.wlt-bookshop-debug__title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.75rem;
+}
+
+.wlt-bookshop-debug__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.wlt-bookshop-debug__log li {
+  margin-bottom: 0.35rem;
+  padding-left: 1.4rem;
+  position: relative;
+  line-height: 1.35;
+}
+
+.wlt-bookshop-debug__log li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-size: 1.15em;
+  opacity: 0.6;
+}
+
+.wlt-bookshop-debug__log li[data-level="info"] {
+  color: #cbd5f5;
+}
+
+.wlt-bookshop-debug__log li[data-level="warn"] {
+  color: #facc15;
+}
+
+.wlt-bookshop-debug__log li[data-level="error"] {
+  color: #f87171;
+}
+
+.wlt-bookshop-grid[data-wlt-bookshop-empty="1"] .wlt-bookshop-cards {
+  opacity: 0.3;
+}
+
+.wlt-bookshop-grid[data-wlt-bookshop-permission="denied"] {
+  border-color: #f87171;
+  background: #fff7f7;
 }
 
 @media (max-width: 640px) {
