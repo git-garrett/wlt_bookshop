@@ -377,11 +377,18 @@ class BookIsbnLookup {
       $debug['works'] = [];
     }
 
+    $seenWorks = [];
     foreach ($data['docs'] as $doc) {
       if (!is_array($doc)) {
         continue;
       }
       $workKey = isset($doc['key']) ? (string) $doc['key'] : '';
+      if ($workKey !== '' && isset($seenWorks[$workKey])) {
+        continue;
+      }
+      if ($workKey !== '') {
+        $seenWorks[$workKey] = TRUE;
+      }
       $coverKey = !empty($doc['cover_edition_key']) ? (string) $doc['cover_edition_key'] : '';
 
       if ($coverKey !== '') {
