@@ -84,6 +84,19 @@ class BookIsbnProcessForm extends FormBase {
 
     // Show debug output block if set during submit.
     $debug_output = $form_state->get('debug_output');
+    if (!is_string($debug_output) || $debug_output === '') {
+      try {
+        $store = \Drupal::service('user.private_tempstore')->get('wlt_bookshop');
+        $stored = $store->get('isbn_debug_output');
+        if (is_string($stored) && $stored !== '') {
+          $debug_output = $stored;
+          $store->delete('isbn_debug_output');
+        }
+      }
+      catch (\Throwable $e) {
+        $debug_output = '';
+      }
+    }
     if (is_string($debug_output) && $debug_output !== '') {
       $form['debug_output'] = [
         '#type' => 'details',
@@ -112,13 +125,10 @@ class BookIsbnProcessForm extends FormBase {
     $batchSize = (int) $form_state->getValue('batch_size');
     $batchSize = max(1, min(500, $batchSize ?: 100));
 
-    /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
-    $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
-    /** @var \Drupal\Core\Logger\LoggerChannelInterface $logger */
-    $logger = \Drupal::logger('wlt_bookshop');
+    $nids = [];
 
-    // If a specific NID is provided, process only that node.
+    // If a specific NID is provided, validate and process only that node.
     if ($specific_nid > 0) {
       $node = $storage->load($specific_nid);
       if (!$node instanceof NodeInterface) {
@@ -133,94 +143,13 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addError($this->t('Node @nid is missing required fields.', ['@nid' => $specific_nid]));
         return;
       }
-      $authors = $this->getAuthorNames($node);
-      $title = $this->getSearchTitle($node);
+      $authors = static::getAuthorNames($node);
+      $title = static::getSearchTitle($node);
       if ($title === '' && empty($authors)) {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title/author to search.', ['@nid' => $specific_nid]));
         return;
       }
-
-      // Collect all ISBNs from Open Library and append missing to field.
-      $found = [];
-      $debugInfo = $debugEnabled ? [] : NULL;
-      foreach ($authors as $authorName) {
-        if ($authorName === '') {
-          continue;
-        }
-        $list = [];
-        if (method_exists($lookup, 'getIsbnsByAuthor')) {
-          $list = $debugEnabled
-            ? $lookup->getIsbnsByAuthor($authorName, $debugInfo)
-            : $lookup->getIsbnsByAuthor($authorName);
-        }
-        elseif (method_exists($lookup, 'getIsbnByAuthor')) {
-          $single = $debugEnabled
-            ? $lookup->getIsbnByAuthor($authorName, $debugInfo)
-            : $lookup->getIsbnByAuthor($authorName);
-          $list = $single ? [$single] : [];
-        }
-        foreach ((array) $list as $isbn) {
-          $normalized = \wlt_bookshop_normalize_isbn((string) $isbn);
-          if ($normalized) {
-            $found[$normalized] = TRUE;
-          }
-        }
-      }
-
-      // Merge with existing values, dedupe.
-      $existing_items = $node->get('field_isbn')->getValue();
-      $existing = [];
-      foreach ($existing_items as $item) {
-        if (isset($item['value']) && $item['value'] !== '') {
-          $existing[$item['value']] = TRUE;
-        }
-      }
-      $added = 0;
-      foreach (array_keys($found) as $isbn) {
-        $isbn = (string) $isbn;
-        if ($isbn === '') { continue; }
-        if (!isset($existing[$isbn])) {
-          $existing[$isbn] = TRUE;
-          $added++;
-        }
-      }
-
-      if ($added > 0) {
-        $items = [];
-        foreach (array_keys($existing) as $isbn) {
-          $items[] = ['value' => $isbn];
-        }
-        try {
-          $node->set('field_isbn', $items);
-          $node->save();
-          $this->messenger()->addStatus($this->t('Added @added ISBN(s) to node @nid (total @total).', [
-            '@added' => $added,
-            '@nid' => $specific_nid,
-            '@total' => count($items),
-          ]));
-          $logger->notice('Manual process added @added ISBN(s) on node @nid.', ['@added' => $added, '@nid' => $specific_nid]);
-        }
-        catch (\Throwable $e) {
-          $logger->error('Failed saving ISBNs to node @nid: @message', [
-            '@nid' => $node->id(),
-            '@message' => $e->getMessage(),
-          ]);
-          $this->messenger()->addError($this->t('Failed saving ISBNs on node @nid.', ['@nid' => $specific_nid]));
-        }
-      }
-      else {
-        $this->messenger()->addStatus($this->t('No new ISBNs found for node @nid (authors: @authors).', [
-          '@nid' => $specific_nid,
-          '@authors' => implode(', ', $authors),
-        ]));
-      }
-
-      if ($debugEnabled) {
-        $savedIsbns = array_keys($existing);
-        $summary = $this->formatDebugSummary($specific_nid, $title, $authors, is_array($debugInfo) ? $debugInfo : [], $savedIsbns);
-        $form_state->set('debug_output', $summary);
-        $form_state->setRebuild(TRUE);
-      }
+      $this->startBatch([[ $specific_nid ]], $debugEnabled);
       return;
     }
 
@@ -239,34 +168,7 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $stats = [
-        'checked' => 0,
-        'updated' => 0,
-      ];
-      $debugCombined = '';
-      foreach ($chunks as $chunk) {
-        /** @var \Drupal\node\Entity\Node[] $nodes */
-        $nodes = $storage->loadMultiple($chunk);
-        $this->processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined);
-      }
-
-      if ($stats['updated'] > 0) {
-        $this->messenger()->addStatus($this->t('Updated ISBN on @count book review nodes (checked @checked).', [
-          '@count' => $stats['updated'],
-          '@checked' => $stats['checked'],
-        ]));
-        $logger->notice('Manual process updated ISBN on @count book review nodes.', ['@count' => $stats['updated']]);
-      }
-      else {
-        $this->messenger()->addStatus($this->t('Processed @checked nodes, no updates were necessary.', [
-          '@checked' => $stats['checked'],
-        ]));
-      }
-
-      if ($debugEnabled && $debugCombined !== '') {
-        $form_state->set('debug_output', $debugCombined);
-        $form_state->setRebuild(TRUE);
-      }
+      $this->startBatch($chunks, $debugEnabled);
       return;
     }
 
@@ -285,31 +187,118 @@ class BookIsbnProcessForm extends FormBase {
       return;
     }
 
+    $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
+    $this->startBatch($chunks, $debugEnabled);
+  }
+
+  /**
+   * Kick off a Drupal batch for ISBN processing.
+   *
+   * @param array[] $chunks
+   *   Nested arrays of node IDs to process per operation.
+   * @param bool $debugEnabled
+   *   Whether debug output should be collected.
+   */
+  protected function startBatch(array $chunks, bool $debugEnabled): void {
+    $operations = [];
+    foreach ($chunks as $chunk) {
+      $operations[] = [
+        [static::class, 'batchProcess'],
+        [$chunk, $debugEnabled],
+      ];
+    }
+
+    $batch = [
+      'title' => $this->t('Processing book review ISBN lookups'),
+      'operations' => $operations,
+      'finished' => [static::class, 'batchFinished'],
+      'init_message' => $this->t('Starting ISBN lookup...'),
+      'progress_message' => $this->t('Processed @current of @total batches.'),
+      'error_message' => $this->t('The ISBN processing batch encountered an error.'),
+    ];
+
+    if ($debugEnabled) {
+      $batch['results']['debug_enabled'] = TRUE;
+    }
+
+    batch_set($batch);
+  }
+
+  /**
+   * Batch operation callback.
+   *
+   * @param int[] $nids
+   *   Node IDs to process in this operation.
+   * @param bool $debugEnabled
+   *   TRUE when debug output should be aggregated.
+   * @param array $context
+   *   Batch context array.
+   */
+  public static function batchProcess(array $nids, bool $debugEnabled, array &$context): void {
+    /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
+    $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
+    $storage = \Drupal::entityTypeManager()->getStorage('node');
     /** @var \Drupal\node\Entity\Node[] $nodes */
     $nodes = $storage->loadMultiple($nids);
+    $logger = \Drupal::logger('wlt_bookshop');
+
     $stats = [
       'checked' => 0,
       'updated' => 0,
     ];
     $debugCombined = '';
-    $this->processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined);
 
-    if ($stats['updated'] > 0) {
-      $this->messenger()->addStatus($this->t('Updated ISBN on @count book review nodes (checked @checked).', [
-        '@count' => $stats['updated'],
-        '@checked' => $stats['checked'],
+    static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined);
+
+    $context['results']['checked'] = ($context['results']['checked'] ?? 0) + $stats['checked'];
+    $context['results']['updated'] = ($context['results']['updated'] ?? 0) + $stats['updated'];
+    $context['results']['operations'] = ($context['results']['operations'] ?? 0) + 1;
+    if ($debugEnabled && $debugCombined !== '') {
+      $context['results']['debug'][] = $debugCombined;
+    }
+
+    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far.', [
+      '@count' => $context['results']['checked'],
+    ]);
+  }
+
+  /**
+   * Batch finished callback.
+   */
+  public static function batchFinished(bool $success, array $results, array $operations): void {
+    $messenger = \Drupal::messenger();
+    $logger = \Drupal::logger('wlt_bookshop');
+
+    if (!$success) {
+      $messenger->addError(t('The ISBN processing batch did not complete.'));
+      return;
+    }
+
+    $checked = $results['checked'] ?? 0;
+    $updated = $results['updated'] ?? 0;
+
+    if ($updated > 0) {
+      $messenger->addStatus(t('Updated ISBN on @count book review nodes (checked @checked).', [
+        '@count' => $updated,
+        '@checked' => $checked,
       ]));
-      $logger->notice('Manual process updated ISBN on @count book review nodes.', ['@count' => $stats['updated']]);
+      $logger->notice('Manual process updated ISBN on @count book review nodes.', ['@count' => $updated]);
     }
     else {
-      $this->messenger()->addStatus($this->t('Processed @checked nodes, no updates were necessary.', [
-        '@checked' => $stats['checked'],
+      $messenger->addStatus(t('Processed @checked nodes, no updates were necessary.', [
+        '@checked' => $checked,
       ]));
     }
 
-    if ($debugEnabled && $debugCombined !== '') {
-      $form_state->set('debug_output', $debugCombined);
-      $form_state->setRebuild(TRUE);
+    if (!empty($results['debug'])) {
+      $debug = implode("\n\n", $results['debug']);
+      try {
+        $store = \Drupal::service('user.private_tempstore')->get('wlt_bookshop');
+        $store->set('isbn_debug_output', $debug);
+      }
+      catch (\Throwable $e) {
+        // Ignore tempstore failures; debug output just won't display.
+      }
     }
   }
 
@@ -329,7 +318,7 @@ class BookIsbnProcessForm extends FormBase {
    * @param string $debugCombined
    *   Aggregated debug output string.
    */
-  protected function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined): void {
+  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined): void {
     foreach ($nodes as $node) {
       $stats['checked']++;
       if (!$node instanceof NodeInterface) {
@@ -341,8 +330,8 @@ class BookIsbnProcessForm extends FormBase {
       if (!$node->hasField('field_author') || !$node->hasField('field_isbn')) {
         continue;
       }
-      $authors = $this->getAuthorNames($node);
-      $title = $this->getSearchTitle($node);
+      $authors = static::getAuthorNames($node);
+      $title = static::getSearchTitle($node);
       if ($title === '' && empty($authors)) {
         continue;
       }
@@ -407,6 +396,8 @@ class BookIsbnProcessForm extends FormBase {
             '@nid' => $node->id(),
             '@message' => $e->getMessage(),
           ]);
+          // Skip collecting debug for this node if save failed.
+          $items = NULL;
         }
       }
 
@@ -419,7 +410,7 @@ class BookIsbnProcessForm extends FormBase {
             }
           }
         }
-        $debugCombined .= $this->formatDebugSummary($node->id(), $title, $authors, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
+        $debugCombined .= static::formatDebugSummary($node->id(), $title, $authors, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
       }
     }
   }
@@ -427,7 +418,7 @@ class BookIsbnProcessForm extends FormBase {
   /**
    * Extract author name strings from field_author.
    */
-  protected function getAuthorNames(NodeInterface $node): array {
+  protected static function getAuthorNames(NodeInterface $node): array {
     if (!$node->hasField('field_author') || $node->get('field_author')->isEmpty()) {
       return [];
     }
@@ -435,7 +426,7 @@ class BookIsbnProcessForm extends FormBase {
     foreach ($node->get('field_author') as $item) {
       // For entity reference, use the referenced entity label.
       if (isset($item->entity) && $item->entity) {
-        $label = $this->sanitizeText((string) $item->entity->label());
+        $label = static::sanitizeText((string) $item->entity->label());
         if ($label !== '') {
           $names[$label] = TRUE;
           continue;
@@ -443,7 +434,7 @@ class BookIsbnProcessForm extends FormBase {
       }
       // For non-entity fields (e.g., text), fall back to value.
       if (isset($item->value)) {
-        $val = $this->sanitizeText((string) $item->value);
+        $val = static::sanitizeText((string) $item->value);
         if ($val !== '') {
           $names[$val] = TRUE;
         }
@@ -456,20 +447,20 @@ class BookIsbnProcessForm extends FormBase {
    * Resolve a title string for search.
    * Prefers custom field `field_sidebartitle`, falls back to node label().
    */
-  protected function getSearchTitle(NodeInterface $node): string {
+  protected static function getSearchTitle(NodeInterface $node): string {
     if ($node->hasField('field_sidebartitle')) {
-      $val = $this->sanitizeText((string) $node->get('field_sidebartitle')->value);
+      $val = static::sanitizeText((string) $node->get('field_sidebartitle')->value);
       if ($val !== '') {
         return $val;
       }
     }
-    return $this->sanitizeText((string) $node->label());
+    return static::sanitizeText((string) $node->label());
   }
 
   /**
    * Strip HTML and normalize whitespace in user-provided text.
    */
-  protected function sanitizeText(string $text): string {
+  protected static function sanitizeText(string $text): string {
     if ($text === '') { return ''; }
     // Decode entities, remove tags, collapse whitespace.
     $text = html_entity_decode($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -481,7 +472,7 @@ class BookIsbnProcessForm extends FormBase {
   /**
    * Format debug details into a readable text block.
    */
-  protected function formatDebugSummary(int $nid, string $title, array $authors, array $debugInfo, array $savedIsbns): string {
+  protected static function formatDebugSummary(int $nid, string $title, array $authors, array $debugInfo, array $savedIsbns): string {
     $lines = [];
     $lines[] = 'Node NID: ' . $nid;
     $lines[] = 'Title: ' . $title;
