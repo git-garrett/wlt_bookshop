@@ -391,6 +391,12 @@ function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDi
   if ($node->bundle() !== 'book_review') {
     return;
   }
+  if ($node->hasField('field_isbn_kill_switch') && !$node->get('field_isbn_kill_switch')->isEmpty()) {
+    $kill_switch = (string) $node->get('field_isbn_kill_switch')->value;
+    if ($kill_switch === '1') {
+      return;
+    }
+  }
   $current_user = \Drupal::currentUser();
   if (!$current_user || !in_array((int) $current_user->id(), [3465, 1234], TRUE)) {
     return;
