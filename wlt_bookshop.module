@@ -34,6 +34,12 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   if (!$entity->hasField('field_author') || !$entity->hasField('field_isbn')) {
     return;
   }
+  if ($entity->hasField('field_isbn_kill_switch') && !$entity->get('field_isbn_kill_switch')->isEmpty()) {
+    $kill_switch = (string) $entity->get('field_isbn_kill_switch')->value;
+    if ($kill_switch === '1') {
+      return;
+    }
+  }
 
   // Skip lookup when values already exist.
   $existing_values = array_filter(array_map(static function (array $item) {
