@@ -299,25 +299,7 @@ function wlt_bookshop_link_author_in_html(string $html, string $author, string $
     // Fallback simple replacement.
     $pattern = '/' . preg_quote($author, '/') . '/iu';
     $replacement = '<a href="' . Html::escape($url) . '" class="wlt-bookshop-author-link" target="_blank" rel="noopener noreferrer">$0</a>';
-    $segments = preg_split('/(<a\b[^>]*>.*?<\/a>)/is', $html, -1, PREG_SPLIT_DELIM_CAPTURE);
-    if ($segments === FALSE) {
-      return preg_replace($pattern, $replacement, $html, 1) ?? $html;
-    }
-    $linked = FALSE;
-    foreach ($segments as $index => $segment) {
-      if ($linked) {
-        continue;
-      }
-      if (preg_match('/^<a\b/i', $segment)) {
-        continue;
-      }
-      $updated = preg_replace($pattern, $replacement, $segment, 1, $count);
-      if ($updated !== NULL && $count > 0) {
-        $segments[$index] = $updated;
-        $linked = TRUE;
-      }
-    }
-    return implode('', $segments);
+    return preg_replace($pattern, $replacement, $html, 1) ?? $html;
   }
 
   $xpath = new \DOMXPath($dom);
