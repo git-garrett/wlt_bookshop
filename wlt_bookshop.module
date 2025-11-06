@@ -378,7 +378,8 @@ function wlt_bookshop_link_author_in_html(string $html, string $author, string $
  * Inject a Bookshop link for the primary author inside the node body.
  */
 function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDisplayInterface $display, $view_mode): void {
-  if ($node->bundle() !== 'book_review') {
+  $bundle = $node->bundle();
+  if (!wlt_bookshop_bundle_is_enabled($bundle)) {
     return;
   }
   if (wlt_bookshop_is_kill_switch_enabled($node)) {
@@ -397,7 +398,7 @@ function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDi
   if ($author) {
     $targets[$author] = TRUE;
   }
-  $editor_field = wlt_bookshop_get_bundle_field($node->bundle(), 'editor_field') ?? 'field_editor';
+  $editor_field = wlt_bookshop_get_bundle_field($bundle, 'editor_field') ?? 'field_editor';
   if ($editor_field !== '' && $node->hasField($editor_field) && !$node->get($editor_field)->isEmpty()) {
     foreach ($node->get($editor_field) as $item) {
       if (isset($item->entity) && $item->entity) {
