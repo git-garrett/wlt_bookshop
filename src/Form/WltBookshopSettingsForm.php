@@ -68,6 +68,7 @@ class WltBookshopSettingsForm extends ConfigFormBase {
   public function buildForm(array $form, FormStateInterface $form_state): array {
     $config = $this->config('wlt_bookshop.settings');
     $bundle_settings = $config->get('bundle_settings') ?? [];
+    $debug_logging = (bool) ($config->get('debug_logging') ?? FALSE);
 
     $bundles = $this->bundleInfo->getBundleInfo('node');
     if (empty($bundles)) {
@@ -82,6 +83,13 @@ class WltBookshopSettingsForm extends ConfigFormBase {
     foreach ($bundles as $bundle_id => $bundle) {
       $bundle_options[$bundle_id] = $bundle['label'] ?? $bundle_id;
     }
+
+    $form['debug_logging'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Enable settings debug logging'),
+      '#default_value' => $debug_logging,
+      '#description' => $this->t('Write additional diagnostics to the log when viewing or submitting this form. Turn off when not troubleshooting.'),
+    ];
 
     $form['enabled_bundles'] = [
       '#type' => 'checkboxes',
@@ -107,6 +115,14 @@ class WltBookshopSettingsForm extends ConfigFormBase {
         $field_options[$field_name] = $definition->getLabel() . ' (' . $field_name . ')';
       }
       asort($field_options, SORT_NATURAL | SORT_FLAG_CASE);
+
+      if ($debug_logging) {
+        \Drupal::logger('wlt_bookshop_settings')->notice('Bundle @bundle field options: @options', [
+          '@bundle' => $bundle_id,
+          '@options' => implode(', ', array_keys($field_options)),
+        ]);
+      }
+
       $field_options_cache[$bundle_id] = $field_options;
 
       $form['bundle_' . $bundle_id] = [
@@ -171,6 +187,13 @@ class WltBookshopSettingsForm extends ConfigFormBase {
     $enabled = array_filter($form_state->getValue('enabled_bundles') ?? []);
     $field_options_cache = $form_state->get('wlt_bookshop_field_options') ?? [];
 
+    $debug_logging = (bool) ($this->configFactory->get('wlt_bookshop.settings')->get('debug_logging') ?? FALSE);
+    if ($debug_logging) {
+      \Drupal::logger('wlt_bookshop_settings')->notice('Enabled bundles submitted: @bundles', [
+        '@bundles' => implode(', ', array_keys($enabled)),
+      ]);
+    }
+
     foreach ($enabled as $bundle_id => $bundle_value) {
       $author = (string) $form_state->getValue(['bundle_' . $bundle_id, 'author_field']);
       $isbn = (string) $form_state->getValue(['bundle_' . $bundle_id, 'isbn_field']);
@@ -178,6 +201,17 @@ class WltBookshopSettingsForm extends ConfigFormBase {
       $kill = (string) $form_state->getValue(['bundle_' . $bundle_id, 'kill_switch_field']);
 
       $options = $field_options_cache[$bundle_id] ?? [];
+
+      if ($debug_logging) {
+        \Drupal::logger('wlt_bookshop_settings')->notice('Validating bundle @bundle: author=@a isbn=@i editor=@e kill=@k options=[@options]', [
+          '@bundle' => $bundle_id,
+          '@a' => $author,
+          '@i' => $isbn,
+          '@e' => $editor,
+          '@k' => $kill,
+          '@options' => implode(', ', array_keys($options)),
+        ]);
+      }
 
       if ($author === '' || $isbn === '') {
         $form_state->setErrorByName('bundle_' . $bundle_id . '][author_field', $this->t('Author and ISBN fields are required for the @bundle bundle.', ['@bundle' => $bundle_id]));
@@ -216,6 +250,7 @@ class WltBookshopSettingsForm extends ConfigFormBase {
 
     $this->configFactory->getEditable('wlt_bookshop.settings')
       ->set('bundle_settings', $bundle_settings)
+      ->set('debug_logging', (bool) $form_state->getValue('debug_logging'))
       ->save();
 
     parent::submitForm($form, $form_state);

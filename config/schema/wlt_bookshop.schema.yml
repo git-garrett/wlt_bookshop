@@ -22,3 +22,6 @@ wlt_bookshop.settings:
             kill_switch_field:
               type: string
               label: 'Kill switch field'
+    debug_logging:
+      type: boolean
+      label: 'Enable settings debug logging'
