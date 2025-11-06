@@ -4,7 +4,6 @@ namespace Drupal\wlt_bookshop\Service;
 
 use GuzzleHttp\ClientInterface;
 use Psr\Log\LoggerInterface;
-use Drupal\Component\Utility\Unicode;
 use Drupal\Component\Utility\Html;
 
 /**
@@ -333,7 +332,7 @@ class BookIsbnLookup {
     }
 
     $useCache = !is_array($debug);
-    $cacheKey = Unicode::strtolower($author);
+    $cacheKey = mb_strtolower($author, 'UTF-8');
     if ($useCache && isset($this->authorCache[$cacheKey])) {
       return $this->authorCache[$cacheKey];
     }
