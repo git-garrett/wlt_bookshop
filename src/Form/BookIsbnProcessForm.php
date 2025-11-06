@@ -455,9 +455,6 @@ class BookIsbnProcessForm extends FormBase {
         ->notExists($isbn_field)
         ->sort('changed', 'DESC');
       $kill_field = $settings['kill_switch_field'] ?? '';
-      if ($kill_field !== '') {
-        $query->condition($kill_field, '1', '<>');
-      }
       if ($limit !== NULL) {
         if ($remaining <= 0) {
           break;
@@ -509,12 +506,14 @@ class BookIsbnProcessForm extends FormBase {
           if (!empty($isbn_empty)) {
             $eligible = $isbn_empty;
             if ($kill_field !== '') {
-              $eligible = \Drupal::entityQuery('node')
+              $kill_on = \Drupal::entityQuery('node')
                 ->accessCheck(FALSE)
                 ->condition('nid', $isbn_empty, 'IN')
-                ->condition($kill_field, '1', '<>')
+                ->condition($kill_field, '1')
                 ->execute();
-              $eligible = array_values($eligible);
+              if (!empty($kill_on)) {
+                $eligible = array_values(array_diff($isbn_empty, $kill_on));
+              }
             }
           }
 
@@ -528,6 +527,16 @@ class BookIsbnProcessForm extends FormBase {
         }
       }
       $ids = $query->execute();
+      if ($kill_field !== '' && !empty($ids)) {
+        $kill_enabled = \Drupal::entityQuery('node')
+          ->accessCheck(FALSE)
+          ->condition('nid', $ids, 'IN')
+          ->condition($kill_field, '1')
+          ->execute();
+        if (!empty($kill_enabled)) {
+          $ids = array_values(array_diff($ids, $kill_enabled));
+        }
+      }
       if (empty($ids)) {
         if ($debug) {
           \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes found for bundle @bundle (author field: @author, ISBN field: @isbn, kill switch: @kill).', [
