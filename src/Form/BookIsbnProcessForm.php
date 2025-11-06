@@ -472,49 +472,59 @@ class BookIsbnProcessForm extends FormBase {
           '@kill' => $kill_field ?: '(none)',
         ]);
 
-        $counts = [
-          'total' => 0,
-          'has_author' => 0,
-          'isbn_empty' => 0,
-          'kill_off' => 0,
-        ];
         $candidate_ids = \Drupal::entityQuery('node')
           ->accessCheck(FALSE)
           ->condition('type', $bundle)
           ->execute();
-        if (!empty($candidate_ids)) {
+
+        if (empty($candidate_ids)) {
+          \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle contains no nodes.', ['@bundle' => $bundle]);
+        }
+        else {
           $storage = \Drupal::entityTypeManager()->getStorage('node');
           /** @var \Drupal\node\NodeInterface[] $nodes_to_check */
           $nodes_to_check = $storage->loadMultiple($candidate_ids);
+
+          $total = count($nodes_to_check);
+          $with_author = [];
+          $isbn_empty = [];
+          $eligible = [];
+
           foreach ($nodes_to_check as $candidate) {
-            $counts['total']++;
             $has_author = $candidate->hasField($author_field) && !$candidate->get($author_field)->isEmpty();
-            $isbn_is_empty = !$candidate->hasField($isbn_field) || $candidate->get($isbn_field)->isEmpty();
-            $kill_allows = TRUE;
-            if ($kill_field !== '' && $candidate->hasField($kill_field) && !$candidate->get($kill_field)->isEmpty()) {
-              $kill_value = $candidate->get($kill_field)->value;
-              $kill_allows = !in_array((string) $kill_value, ['1', 'true', 'on'], TRUE);
-            }
             if ($has_author) {
-              $counts['has_author']++;
-            }
-            if ($isbn_is_empty) {
-              $counts['isbn_empty']++;
-            }
-            if ($kill_allows) {
-              $counts['kill_off']++;
+              $with_author[] = $candidate->id();
             }
           }
-          \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle stats: total=@total, has_author=@has_author, isbn_empty=@isbn_empty, kill_off=@kill_off.', [
+
+          if (!empty($with_author)) {
+            $isbn_empty_ids = \Drupal::entityQuery('node')
+              ->accessCheck(FALSE)
+              ->condition('nid', $with_author, 'IN')
+              ->notExists($isbn_field)
+              ->execute();
+            $isbn_empty = array_values($isbn_empty_ids);
+          }
+
+          if (!empty($isbn_empty)) {
+            $eligible = $isbn_empty;
+            if ($kill_field !== '') {
+              $eligible = \Drupal::entityQuery('node')
+                ->accessCheck(FALSE)
+                ->condition('nid', $isbn_empty, 'IN')
+                ->condition($kill_field, '1', '<>')
+                ->execute();
+              $eligible = array_values($eligible);
+            }
+          }
+
+          \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle stats: total=@total, pass_author=@author_count, pass_isbn=@isbn_count, final_candidates=@final_count.', [
             '@bundle' => $bundle,
-            '@total' => $counts['total'],
-            '@has_author' => $counts['has_author'],
-            '@isbn_empty' => $counts['isbn_empty'],
-            '@kill_off' => $counts['kill_off'],
+            '@total' => $total,
+            '@author_count' => count($with_author),
+            '@isbn_count' => count($isbn_empty),
+            '@final_count' => count($eligible),
           ]);
-        }
-        else {
-          \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle contains no nodes.', ['@bundle' => $bundle]);
         }
       }
       $ids = $query->execute();
