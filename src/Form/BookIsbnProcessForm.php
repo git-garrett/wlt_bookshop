@@ -330,11 +330,8 @@ class BookIsbnProcessForm extends FormBase {
       if (!$node->hasField('field_author') || !$node->hasField('field_isbn')) {
         continue;
       }
-      if ($node->hasField('field_isbn_kill_switch') && !$node->get('field_isbn_kill_switch')->isEmpty()) {
-        $killSwitchValue = (string) $node->get('field_isbn_kill_switch')->value;
-        if ($killSwitchValue === '1') {
-          continue;
-        }
+      if (wlt_bookshop_is_kill_switch_enabled($node)) {
+        continue;
       }
       $authors = static::getAuthorNames($node);
       $title = static::getSearchTitle($node);
@@ -425,11 +422,12 @@ class BookIsbnProcessForm extends FormBase {
    * Extract author name strings from field_author.
    */
   protected static function getAuthorNames(NodeInterface $node): array {
-    if (!$node->hasField('field_author') || $node->get('field_author')->isEmpty()) {
+    $field = wlt_bookshop_get_bundle_field($node->bundle(), 'author_field') ?? 'field_author';
+    if (!$node->hasField($field) || $node->get($field)->isEmpty()) {
       return [];
     }
     $names = [];
-    foreach ($node->get('field_author') as $item) {
+    foreach ($node->get($field) as $item) {
       // For entity reference, use the referenced entity label.
       if (isset($item->entity) && $item->entity) {
         $label = static::sanitizeText((string) $item->entity->label());

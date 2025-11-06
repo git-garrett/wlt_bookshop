@@ -31,20 +31,21 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   if (!$entity instanceof NodeInterface || $entity->bundle() !== 'book_review') {
     return;
   }
-  if (!$entity->hasField('field_author') || !$entity->hasField('field_isbn')) {
+  $bundle = $entity->bundle();
+  $author_field = wlt_bookshop_get_bundle_field($bundle, 'author_field') ?? 'field_author';
+  $isbn_field = wlt_bookshop_get_bundle_field($bundle, 'isbn_field') ?? 'field_isbn';
+
+  if (wlt_bookshop_is_kill_switch_enabled($entity)) {
     return;
   }
-  if ($entity->hasField('field_isbn_kill_switch') && !$entity->get('field_isbn_kill_switch')->isEmpty()) {
-    $kill_switch = (string) $entity->get('field_isbn_kill_switch')->value;
-    if ($kill_switch === '1') {
-      return;
-    }
+  if (!$entity->hasField($author_field) || !$entity->hasField($isbn_field)) {
+    return;
   }
 
   // Skip lookup when values already exist.
   $existing_values = array_filter(array_map(static function (array $item) {
     return isset($item['value']) ? trim((string) $item['value']) : '';
-  }, $entity->get('field_isbn')->getValue()));
+  }, $entity->get($isbn_field)->getValue()));
   if (!empty($existing_values)) {
     return;
   }
@@ -102,7 +103,8 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
  *   The first ISBN found, or NULL if not available.
  */
 function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
-  if ($node->bundle() !== 'book_review') {
+  $bundle = $node->bundle();
+  if (!wlt_bookshop_bundle_is_enabled($bundle) && $bundle !== 'book_review') {
     return NULL;
   }
   $authors = wlt_bookshop_collect_author_names($node);
@@ -152,11 +154,12 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
  *   Array of unique author strings.
  */
 function wlt_bookshop_collect_author_names(NodeInterface $node): array {
-  if (!$node->hasField('field_author') || $node->get('field_author')->isEmpty()) {
+  $field = wlt_bookshop_get_bundle_field($node->bundle(), 'author_field') ?? 'field_author';
+  if (!$node->hasField($field) || $node->get($field)->isEmpty()) {
     return [];
   }
   $names = [];
-  foreach ($node->get('field_author') as $item) {
+  foreach ($node->get($field) as $item) {
     if (isset($item->entity) && $item->entity) {
       $label = wlt_bookshop_sanitize_text((string) $item->entity->label());
       if ($label !== '') {
@@ -373,11 +376,8 @@ function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDi
   if ($node->bundle() !== 'book_review') {
     return;
   }
-  if ($node->hasField('field_isbn_kill_switch') && !$node->get('field_isbn_kill_switch')->isEmpty()) {
-    $kill_switch = (string) $node->get('field_isbn_kill_switch')->value;
-    if ($kill_switch === '1') {
-      return;
-    }
+  if (wlt_bookshop_is_kill_switch_enabled($node)) {
+    return;
   }
   $current_user = \Drupal::currentUser();
   if (!$current_user || !in_array((int) $current_user->id(), [3465, 1234], TRUE)) {
@@ -392,8 +392,9 @@ function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDi
   if ($author) {
     $targets[$author] = TRUE;
   }
-  if ($node->hasField('field_editor') && !$node->get('field_editor')->isEmpty()) {
-    foreach ($node->get('field_editor') as $item) {
+  $editor_field = wlt_bookshop_get_bundle_field($node->bundle(), 'editor_field') ?? 'field_editor';
+  if ($editor_field !== '' && $node->hasField($editor_field) && !$node->get($editor_field)->isEmpty()) {
+    foreach ($node->get($editor_field) as $item) {
       if (isset($item->entity) && $item->entity) {
         $label = wlt_bookshop_sanitize_text((string) $item->entity->label());
         if ($label !== '') {
@@ -449,4 +450,101 @@ function wlt_bookshop_node_view(array &$build, NodeInterface $node, EntityViewDi
   if ($updated) {
     $body_element['#cache']['tags'][] = 'wlt_bookshop:author-link';
   }
+}
+
+/**
+ * Retrieve default bundle settings used when configuration is absent.
+ */
+function wlt_bookshop_default_bundle_settings(): array {
+  return [
+    'author_field' => 'field_author',
+    'isbn_field' => 'field_isbn',
+    'editor_field' => 'field_editor',
+    'kill_switch_field' => 'field_isbn_kill_switch',
+  ];
+}
+
+/**
+ * Load configured bundle settings with sane fallbacks.
+ *
+ * @return array<string, array>
+ *   Mapping of bundle IDs to settings arrays.
+ */
+function wlt_bookshop_get_bundle_configuration(): array {
+  static $cache;
+  if ($cache !== NULL) {
+    return $cache;
+  }
+  $defaults = wlt_bookshop_default_bundle_settings();
+  $cache = [];
+  try {
+    $config = \Drupal::config('wlt_bookshop.settings');
+    $stored = $config ? $config->get('bundle_settings') : NULL;
+  }
+  catch (\Throwable $e) {
+    $stored = NULL;
+  }
+
+  if ($stored === NULL) {
+    $cache = ['book_review' => $defaults];
+    return $cache;
+  }
+
+  if (!is_array($stored)) {
+    $stored = [];
+  }
+
+  foreach ($stored as $bundle => $settings) {
+    if (!is_string($bundle) || $bundle === '') {
+      continue;
+    }
+    if (!is_array($settings)) {
+      $settings = [];
+    }
+    $cache[$bundle] = $settings + $defaults;
+  }
+  return $cache;
+}
+
+/**
+ * Determine whether a bundle is configured for Bookshop processing.
+ */
+function wlt_bookshop_bundle_is_enabled(string $bundle): bool {
+  $configuration = wlt_bookshop_get_bundle_configuration();
+  return isset($configuration[$bundle]);
+}
+
+/**
+ * Retrieve bundle settings or defaults for a bundle.
+ */
+function wlt_bookshop_get_bundle_settings(string $bundle): array {
+  $configuration = wlt_bookshop_get_bundle_configuration();
+  if (isset($configuration[$bundle])) {
+    return $configuration[$bundle];
+  }
+  return wlt_bookshop_default_bundle_settings();
+}
+
+/**
+ * Retrieve a specific field machine name for a bundle.
+ */
+function wlt_bookshop_get_bundle_field(string $bundle, string $key): ?string {
+  $settings = wlt_bookshop_get_bundle_settings($bundle);
+  if (!isset($settings[$key])) {
+    return NULL;
+  }
+  $value = (string) $settings[$key];
+  return $value !== '' ? $value : NULL;
+}
+
+/**
+ * Check whether the kill switch is enabled on a node via configuration.
+ */
+function wlt_bookshop_is_kill_switch_enabled(NodeInterface $node): bool {
+  $kill_switch_field = wlt_bookshop_get_bundle_field($node->bundle(), 'kill_switch_field');
+  if (!$kill_switch_field || !$node->hasField($kill_switch_field) || $node->get($kill_switch_field)->isEmpty()) {
+    return FALSE;
+  }
+  $value = $node->get($kill_switch_field)->value;
+  return in_array((string) $value, ['1', 'true', 'on'], TRUE);
 }
