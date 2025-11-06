@@ -28,10 +28,15 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   if ($entity->getEntityTypeId() !== 'node') {
     return;
   }
-  if (!$entity instanceof NodeInterface || $entity->bundle() !== 'book_review') {
+  if (!$entity instanceof NodeInterface) {
     return;
   }
+
   $bundle = $entity->bundle();
+  if (!wlt_bookshop_bundle_is_enabled($bundle)) {
+    return;
+  }
+
   $author_field = wlt_bookshop_get_bundle_field($bundle, 'author_field') ?? 'field_author';
   $isbn_field = wlt_bookshop_get_bundle_field($bundle, 'isbn_field') ?? 'field_isbn';
 
@@ -90,7 +95,7 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   foreach (array_keys($collected) as $value) {
     $items[] = ['value' => $value];
   }
-  $entity->set('field_isbn', $items);
+  $entity->set($isbn_field, $items);
 }
 
 /**
@@ -104,7 +109,7 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
  */
 function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
   $bundle = $node->bundle();
-  if (!wlt_bookshop_bundle_is_enabled($bundle) && $bundle !== 'book_review') {
+  if (!wlt_bookshop_bundle_is_enabled($bundle)) {
     return NULL;
   }
   $authors = wlt_bookshop_collect_author_names($node);
