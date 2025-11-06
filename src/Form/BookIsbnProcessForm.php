@@ -433,6 +433,7 @@ class BookIsbnProcessForm extends FormBase {
       return [];
     }
 
+    $debug = (bool) (\Drupal::config('wlt_bookshop.settings')->get('debug_logging') ?? FALSE);
     $all = [];
     $remaining = $limit ?? PHP_INT_MAX;
     foreach ($bundle_settings as $bundle => $settings) {
@@ -456,10 +457,26 @@ class BookIsbnProcessForm extends FormBase {
       }
       $ids = $query->execute();
       if (empty($ids)) {
+        if ($debug) {
+          \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes found for bundle @bundle (author field: @author, ISBN field: @isbn, kill switch: @kill).', [
+            '@bundle' => $bundle,
+            '@author' => $author_field,
+            '@isbn' => $isbn_field,
+            '@kill' => $kill_field ?: '(none)',
+          ]);
+        }
         continue;
       }
       foreach ($ids as $id) {
         $all[(int) $id] = TRUE;
+      }
+      if ($debug) {
+        \Drupal::logger('wlt_bookshop_batch')->notice('Collected @count candidate nodes for bundle @bundle (author field: @author, ISBN field: @isbn).', [
+          '@count' => count($ids),
+          '@bundle' => $bundle,
+          '@author' => $author_field,
+          '@isbn' => $isbn_field,
+        ]);
       }
       if ($limit !== NULL) {
         $remaining = $limit - count($all);
@@ -470,6 +487,9 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     if (empty($all)) {
+      if ($debug) {
+        \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes were found across all bundles.');
+      }
       return [];
     }
 
@@ -485,6 +505,11 @@ class BookIsbnProcessForm extends FormBase {
 
     if ($limit !== NULL && count($ordered) > $limit) {
       $ordered = array_slice($ordered, 0, $limit);
+    }
+    if ($debug) {
+      \Drupal::logger('wlt_bookshop_batch')->notice('Total candidate nodes after sorting: @total.', [
+        '@total' => count($ordered),
+      ]);
     }
     return $ordered;
   }
