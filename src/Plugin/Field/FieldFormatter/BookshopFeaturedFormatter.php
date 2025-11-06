@@ -31,6 +31,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
       'affiliate_id' => '',
       'full_info' => TRUE,
       'max_widgets' => 3,
+      'show_debug_console' => FALSE,
     ] + parent::defaultSettings();
   }
 
@@ -58,6 +59,12 @@ class BookshopFeaturedFormatter extends FormatterBase {
       '#min' => 1,
       '#description' => $this->t('Limit how many ISBN/EAN widgets to show.'),
     ];
+    $elements['show_debug_console'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Show debug console'),
+      '#default_value' => (bool) $this->getSetting('show_debug_console'),
+      '#description' => $this->t('Outputs additional markup that surfaces raw widget diagnostics on the page.'),
+    ];
     return $elements;
   }
 
@@ -69,6 +76,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
     $summary[] = $this->t('Affiliate ID: @id', ['@id' => $this->getSetting('affiliate_id') ?: $this->t('(not set)')]);
     $summary[] = $this->t('Full info: @v', ['@v' => $this->getSetting('full_info') ? 'true' : 'false']);
     $summary[] = $this->t('Max widgets: @n', ['@n' => (int) $this->getSetting('max_widgets')]);
+    $summary[] = $this->t('Debug console: @v', ['@v' => $this->getSetting('show_debug_console') ? 'enabled' : 'hidden']);
     return $summary;
   }
 
@@ -95,6 +103,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
     if ($max < 1) {
       $max = 1;
     }
+    $show_debug = (bool) $this->getSetting('show_debug_console');
     if ($affiliate === '') {
       return [];
     }
@@ -133,7 +142,7 @@ class BookshopFeaturedFormatter extends FormatterBase {
         'data-wlt-bookshop-card-count' => (string) count($cards),
         'data-wlt-bookshop-permission' => $allowed ? 'allowed' : 'denied',
         'data-wlt-bookshop-uid' => (string) $uid,
-        'data-wlt-bookshop-debug-enabled' => '1',
+        'data-wlt-bookshop-debug-enabled' => $show_debug ? '1' : '0',
         'data-wlt-bookshop-empty' => count($cards) === 0 ? '1' : '0',
       ],
       '#attached' => [
@@ -142,31 +151,33 @@ class BookshopFeaturedFormatter extends FormatterBase {
       '#cache' => $cache,
     ];
 
-    $grid['debug'] = [
-      '#type' => 'container',
-      '#attributes' => [
-        'class' => ['wlt-bookshop-debug'],
-        'data-wlt-bookshop-debug' => '1',
-      ],
-      'title' => [
-        '#type' => 'html_tag',
-        '#tag' => 'div',
-        '#value' => $this->t('Bookshop Debug Console'),
+    if ($show_debug) {
+      $grid['debug'] = [
+        '#type' => 'container',
         '#attributes' => [
-          'class' => ['wlt-bookshop-debug__title'],
+          'class' => ['wlt-bookshop-debug'],
+          'data-wlt-bookshop-debug' => '1',
         ],
-      ],
-      'log' => [
-        '#type' => 'html_tag',
-        '#tag' => 'ul',
-        '#attributes' => [
-          'class' => ['wlt-bookshop-debug__log'],
-          'data-wlt-bookshop-debug-log' => '1',
-          'aria-live' => 'polite',
+        'title' => [
+          '#type' => 'html_tag',
+          '#tag' => 'div',
+          '#value' => $this->t('Bookshop Debug Console'),
+          '#attributes' => [
+            'class' => ['wlt-bookshop-debug__title'],
+          ],
         ],
-        '#value' => '',
-      ],
-    ];
+        'log' => [
+          '#type' => 'html_tag',
+          '#tag' => 'ul',
+          '#attributes' => [
+            'class' => ['wlt-bookshop-debug__log'],
+            'data-wlt-bookshop-debug-log' => '1',
+            'aria-live' => 'polite',
+          ],
+          '#value' => '',
+        ],
+      ];
+    }
 
     $grid['cards'] = [
       '#type' => 'container',
