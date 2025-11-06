@@ -2,14 +2,20 @@
 
 namespace Drupal\wlt_bookshop\Service;
 
-use GuzzleHttp\ClientInterface;
-use Psr\Log\LoggerInterface;
 use Drupal\Component\Utility\Html;
+use Drupal\wlt_bookshop\Exception\OpenLibraryApiException;
+use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\Utils;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Log\LoggerInterface;
 
 /**
  * Service to look up ISBNs using the Open Library API.
  */
 class BookIsbnLookup {
+  private const OPEN_LIBRARY_USER_AGENT = 'WorldLiteratureToday (staff@evenvision.com)';
+  private const OPEN_LIBRARY_RATE_LIMIT = 12;
 
   /** @var \GuzzleHttp\ClientInterface */
   protected $httpClient;
@@ -42,9 +48,93 @@ class BookIsbnLookup {
    */
   protected array $workEditionsCache = [];
 
+  /**
+   * Start of the current Open Library rate limit window (microtime, seconds).
+   */
+  protected float $openLibraryWindowStart = 0.0;
+
+  /**
+   * Number of requests issued within the current Open Library window.
+   */
+  protected int $openLibraryWindowCount = 0;
+
   public function __construct(ClientInterface $http_client, LoggerInterface $logger) {
     $this->httpClient = $http_client;
     $this->logger = $logger;
+  }
+
+  /**
+   * Apply shared defaults to Open Library HTTP options.
+   */
+  protected function prepareOpenLibraryOptions(array $options = []): array {
+    $options['http_errors'] = FALSE;
+    $headers = $options['headers'] ?? [];
+    $headers['User-Agent'] = self::OPEN_LIBRARY_USER_AGENT;
+    $options['headers'] = $headers;
+    return $options;
+  }
+
+  /**
+   * Sleep as necessary to respect Open Library's request rate.
+   */
+  protected function throttleOpenLibraryRequests(): void {
+    $now = microtime(TRUE);
+    if ($this->openLibraryWindowStart === 0.0 || ($now - $this->openLibraryWindowStart) >= 1.0) {
+      $this->openLibraryWindowStart = $now;
+      $this->openLibraryWindowCount = 0;
+    }
+    if ($this->openLibraryWindowCount >= self::OPEN_LIBRARY_RATE_LIMIT) {
+      $sleepSeconds = ($this->openLibraryWindowStart + 1.0) - $now;
+      if ($sleepSeconds > 0) {
+        usleep((int) ceil($sleepSeconds * 1_000_000));
+      }
+      $now = microtime(TRUE);
+      $this->openLibraryWindowStart = $now;
+      $this->openLibraryWindowCount = 0;
+    }
+    $this->openLibraryWindowCount++;
+  }
+
+  /**
+   * Abort processing when Open Library indicates access should stop.
+   */
+  protected function guardOpenLibraryResponse(string $url, ResponseInterface $response, string $context): void {
+    $status = $response->getStatusCode();
+    if ($status === 403 || $status === 429) {
+      $this->logger->error('Open Library returned status @code during @context request (@url); aborting lookup.', [
+        '@code' => $status,
+        '@context' => $context,
+        '@url' => $url,
+      ]);
+      throw new OpenLibraryApiException(sprintf('Open Library returned status %d for %s (%s)', $status, $context, $url), $status);
+    }
+  }
+
+  /**
+   * Execute a throttled Open Library GET request.
+   *
+   * @throws \Drupal\wlt_bookshop\Exception\OpenLibraryApiException
+   *   When Open Library signals access should be halted.
+   */
+  protected function sendOpenLibraryGet(string $url, array $options, string $context): ResponseInterface {
+    $options = $this->prepareOpenLibraryOptions($options);
+    $this->throttleOpenLibraryRequests();
+    $response = $this->httpClient->request('GET', $url, $options);
+    $this->guardOpenLibraryResponse($url, $response, $context);
+    return $response;
+  }
+
+  /**
+   * Queue a throttled Open Library GET request asynchronously.
+   */
+  protected function sendOpenLibraryGetAsync(string $url, array $options, string $context): PromiseInterface {
+    $options = $this->prepareOpenLibraryOptions($options);
+    $this->throttleOpenLibraryRequests();
+    return $this->httpClient->requestAsync('GET', $url, $options)
+      ->then(function (ResponseInterface $response) use ($url, $context) {
+        $this->guardOpenLibraryResponse($url, $response, $context);
+        return $response;
+      });
   }
 
   /**
@@ -70,11 +160,14 @@ class BookIsbnLookup {
     $url = 'https://openlibrary.org/search.json';
 
     try {
-      $response = $this->httpClient->request('GET', $url, [
+      $response = $this->sendOpenLibraryGet($url, [
         'query' => $query,
         'timeout' => 5,
         'connect_timeout' => 3,
-      ]);
+      ], 'title search');
+    }
+    catch (OpenLibraryApiException $e) {
+      throw $e;
     }
     catch (\Throwable $e) {
       $this->logger->warning('Open Library request failed for title "@title": @message', [
@@ -132,11 +225,14 @@ class BookIsbnLookup {
     ];
 
     try {
-      $response = $this->httpClient->request('GET', $searchUrl, [
+      $response = $this->sendOpenLibraryGet($searchUrl, [
         'query' => $query,
         'timeout' => 5,
         'connect_timeout' => 3,
-      ]);
+      ], 'author search');
+    }
+    catch (OpenLibraryApiException $e) {
+      throw $e;
     }
     catch (\Throwable $e) {
       $this->logger->warning('Open Library search failed for author "@author": @message', [
@@ -183,6 +279,7 @@ class BookIsbnLookup {
       return NULL;
     }
 
+    $loadedEditions = [];
     if (is_array($debug)) {
       $debug['author'] = $author;
       $debug['search'] = [
@@ -223,88 +320,42 @@ class BookIsbnLookup {
         }
       }
 
-      // Try each candidate edition for an ISBN.
+      $payloads = $this->loadEditionPayloads($candidateKeys, $debug, $loadedEditions);
       foreach ($candidateKeys as $editionKey) {
-        $editionUrl = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
-
-        try {
-          $editionResponse = $this->httpClient->request('GET', $editionUrl, [
-            'timeout' => 5,
-            'connect_timeout' => 3,
-          ]);
+        if (!array_key_exists($editionKey, $payloads)) {
+          continue;
         }
-        catch (\Throwable $e) {
-          $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
-            '@edition' => $editionKey,
-            '@message' => $e->getMessage(),
-          ]);
-          if (is_array($debug)) {
-            $debug['editions'][] = [
-              'edition' => $editionKey,
-              'url' => $editionUrl,
-              'error' => $e->getMessage(),
-            ];
-          }
+        $payload = $payloads[$editionKey];
+        if (!is_array($payload)) {
           continue;
         }
 
-        if ($editionResponse->getStatusCode() !== 200) {
-          $this->logger->notice('Open Library edition non-200 (@code) for @edition.', [
-            '@code' => $editionResponse->getStatusCode(),
-            '@edition' => $editionKey,
-          ]);
-          if (is_array($debug)) {
-            $debug['editions'][] = [
-              'edition' => $editionKey,
-              'url' => $editionUrl,
-              'status' => $editionResponse->getStatusCode(),
-            ];
+        $formatInfo = $this->determineFormat($payload);
+        $pickedIsbn = NULL;
+        if (!empty($payload['isbn_13']) && is_array($payload['isbn_13'])) {
+          $candidate = (string) reset($payload['isbn_13']);
+          if ($candidate !== '') {
+            $pickedIsbn = $candidate;
           }
-          continue;
+        }
+        if ($pickedIsbn === NULL && !empty($payload['isbn_10']) && is_array($payload['isbn_10'])) {
+          $candidate = (string) reset($payload['isbn_10']);
+          if ($candidate !== '') {
+            $pickedIsbn = $candidate;
+          }
         }
 
-        $edition = json_decode((string) $editionResponse->getBody(), TRUE);
-        if (!is_array($edition)) {
-          if (is_array($debug)) {
-            $debug['editions'][] = [
-              'edition' => $editionKey,
-              'url' => $editionUrl,
-              'decoded' => 'invalid',
-            ];
+        if (is_array($debug)) {
+          $entry = $this->createEditionDebugEntry($editionKey, $payload, $formatInfo, FALSE);
+          if ($pickedIsbn !== NULL) {
+            $entry['picked'] = $pickedIsbn;
+            $debug['found_isbn'] = $pickedIsbn;
           }
-          continue;
+          $debug['editions'][] = $entry;
         }
 
-        // Prefer ISBN-13, then ISBN-10.
-        if (!empty($edition['isbn_13']) && is_array($edition['isbn_13'])) {
-          $isbn = (string) reset($edition['isbn_13']);
-          if ($isbn !== '') {
-            if (is_array($debug)) {
-              $debug['editions'][] = [
-                'edition' => $editionKey,
-                'url' => $editionUrl,
-                'isbn_13' => $edition['isbn_13'],
-                'picked' => $isbn,
-              ];
-              $debug['found_isbn'] = $isbn;
-            }
-            return $isbn;
-          }
-        }
-        if (!empty($edition['isbn_10']) && is_array($edition['isbn_10'])) {
-          $isbn = (string) reset($edition['isbn_10']);
-          if ($isbn !== '') {
-            if (is_array($debug)) {
-              $debug['editions'][] = [
-                'edition' => $editionKey,
-                'url' => $editionUrl,
-                'isbn_10' => $edition['isbn_10'],
-                'picked' => $isbn,
-              ];
-              $debug['found_isbn'] = $isbn;
-            }
-            return $isbn;
-          }
+        if ($pickedIsbn !== NULL) {
+          return $pickedIsbn;
         }
       }
     }
@@ -344,11 +395,14 @@ class BookIsbnLookup {
     ];
 
     try {
-      $response = $this->httpClient->request('GET', $searchUrl, [
+      $response = $this->sendOpenLibraryGet($searchUrl, [
         'query' => $query,
         'timeout' => 8,
         'connect_timeout' => 4,
-      ]);
+      ], 'author search (aggregate)');
+    }
+    catch (OpenLibraryApiException $e) {
+      throw $e;
     }
     catch (\Throwable $e) {
       $this->logger->warning('Open Library search failed for author "@author": @message', [
@@ -424,8 +478,12 @@ class BookIsbnLookup {
       $normalizedWork = $this->normalizeWorkKey($workKey);
       $coverKey = !empty($doc['cover_edition_key']) ? (string) $doc['cover_edition_key'] : '';
 
+      $editionRequests = [];
       if ($coverKey !== '') {
-        $this->appendEditionIsbns($coverKey, $normalizedWork, $results, $sequence, $debug, $loadedEditions, TRUE);
+        $editionRequests[] = [
+          'key' => $coverKey,
+          'preferred' => TRUE,
+        ];
       }
 
       if (!empty($doc['edition_key'])) {
@@ -440,7 +498,29 @@ class BookIsbnLookup {
           if ($editionKey === '' || $editionKey === $coverKey) {
             continue;
           }
-          $this->appendEditionIsbns($editionKey, $normalizedWork, $results, $sequence, $debug, $loadedEditions, FALSE);
+          $editionRequests[] = [
+            'key' => $editionKey,
+            'preferred' => FALSE,
+          ];
+        }
+      }
+
+      if (!empty($editionRequests)) {
+        $orderedKeys = [];
+        foreach ($editionRequests as $request) {
+          $orderedKeys[] = $request['key'];
+        }
+        $payloads = $this->loadEditionPayloads($orderedKeys, $debug, $loadedEditions);
+        foreach ($editionRequests as $request) {
+          $editionKey = $request['key'];
+          if (!array_key_exists($editionKey, $payloads)) {
+            continue;
+          }
+          $payload = $payloads[$editionKey];
+          if (!is_array($payload)) {
+            continue;
+          }
+          $this->processEditionPayload($editionKey, $payload, $normalizedWork, $results, $sequence, $debug, $request['preferred']);
         }
       }
 
@@ -460,84 +540,129 @@ class BookIsbnLookup {
   }
 
   /**
-   * Fetch the JSON for a specific edition and append ISBNs.
+   * Load edition payloads using shared caching and concurrency helpers.
+   *
+   * @param string[] $editionKeys
+   *   Edition identifiers to fetch.
+   *
+   * @return array<string, array|false>
+   *   Decoded payloads keyed by edition identifier. FALSE indicates a failure.
+   *
+   * @throws \Drupal\wlt_bookshop\Exception\OpenLibraryApiException
+   *   When Open Library responds with a hard-stop status.
    */
-  protected function appendEditionIsbns(string $editionKey, string $workKey, array &$results, int &$sequence, ?array &$debug, array &$loadedEditions, bool $preferred = FALSE): void {
-    $editionKey = trim($editionKey);
-    if ($editionKey === '' || isset($loadedEditions[$editionKey])) {
-      return;
+  protected function loadEditionPayloads(array $editionKeys, ?array &$debug, array &$loadedEditions): array {
+    $results = [];
+    if (empty($editionKeys)) {
+      return $results;
     }
-    $loadedEditions[$editionKey] = TRUE;
-
-    $editionUrl = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
     $useCache = !is_array($debug);
-    $payload = NULL;
-    if ($useCache && array_key_exists($editionKey, $this->editionCache)) {
-      $cached = $this->editionCache[$editionKey];
-      if ($cached === FALSE) {
-        return;
+    $keysToFetch = [];
+    $urls = [];
+
+    foreach ($editionKeys as $editionKey) {
+      $editionKey = trim($editionKey);
+      if ($editionKey === '' || isset($loadedEditions[$editionKey])) {
+        continue;
       }
-      $payload = $cached;
+      $loadedEditions[$editionKey] = TRUE;
+
+      if ($useCache && array_key_exists($editionKey, $this->editionCache)) {
+        $results[$editionKey] = $this->editionCache[$editionKey];
+        continue;
+      }
+
+      $keysToFetch[] = $editionKey;
+      $urls[$editionKey] = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
     }
-    else {
-      try {
-        $response = $this->httpClient->request('GET', $editionUrl, [
+
+    if (!empty($keysToFetch)) {
+      $promises = [];
+      foreach ($keysToFetch as $editionKey) {
+        $promises[$editionKey] = $this->sendOpenLibraryGetAsync($urls[$editionKey], [
           'timeout' => 8,
           'connect_timeout' => 4,
-        ]);
-      }
-      catch (\Throwable $e) {
-        $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
-          '@edition' => $editionKey,
-          '@message' => $e->getMessage(),
-        ]);
-        if (is_array($debug)) {
-          $debug['editions'][] = [
-            'edition' => $editionKey,
-            'url' => $editionUrl,
-            'error' => $e->getMessage(),
-          ];
-        }
-        elseif ($useCache) {
-          $this->editionCache[$editionKey] = FALSE;
-        }
-        return;
+        ], 'edition lookup');
       }
 
-      if ($response->getStatusCode() !== 200) {
-        if (is_array($debug)) {
-          $debug['editions'][] = [
-            'edition' => $editionKey,
-            'url' => $editionUrl,
-            'status' => $response->getStatusCode(),
-          ];
-        }
-        elseif ($useCache) {
-          $this->editionCache[$editionKey] = FALSE;
-        }
-        return;
-      }
+      $settled = Utils::settle($promises)->wait();
+      foreach ($settled as $editionKey => $outcome) {
+        $url = $urls[$editionKey];
+        if ($outcome['state'] === 'fulfilled') {
+          /** @var \Psr\Http\Message\ResponseInterface $response */
+          $response = $outcome['value'];
+          if ($response->getStatusCode() !== 200) {
+            $this->logger->notice('Open Library edition non-200 (@code) for @edition.', [
+              '@code' => $response->getStatusCode(),
+              '@edition' => $editionKey,
+            ]);
+            if (is_array($debug)) {
+              $debug['editions'][] = [
+                'edition' => $editionKey,
+                'url' => $url,
+                'status' => $response->getStatusCode(),
+              ];
+            }
+            if ($useCache) {
+              $this->editionCache[$editionKey] = FALSE;
+            }
+            $results[$editionKey] = FALSE;
+            continue;
+          }
 
-      $payload = json_decode((string) $response->getBody(), TRUE);
-      if (!is_array($payload)) {
-        if (is_array($debug)) {
-          $debug['editions'][] = [
-            'edition' => $editionKey,
-            'url' => $editionUrl,
-            'decoded' => 'invalid',
-          ];
-        }
-        elseif ($useCache) {
-          $this->editionCache[$editionKey] = FALSE;
-        }
-        return;
-      }
+          $payload = json_decode((string) $response->getBody(), TRUE);
+          if (!is_array($payload)) {
+            if (is_array($debug)) {
+              $debug['editions'][] = [
+                'edition' => $editionKey,
+                'url' => $url,
+                'decoded' => 'invalid',
+              ];
+            }
+            if ($useCache) {
+              $this->editionCache[$editionKey] = FALSE;
+            }
+            $results[$editionKey] = FALSE;
+            continue;
+          }
 
-      if ($useCache) {
-        $this->editionCache[$editionKey] = $payload;
+          $results[$editionKey] = $payload;
+          if ($useCache) {
+            $this->editionCache[$editionKey] = $payload;
+          }
+        }
+        else {
+          $reason = $outcome['reason'];
+          if ($reason instanceof OpenLibraryApiException) {
+            throw $reason;
+          }
+          $message = $reason instanceof \Throwable ? $reason->getMessage() : 'Unknown error';
+          $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
+            '@edition' => $editionKey,
+            '@message' => $message,
+          ]);
+          if (is_array($debug)) {
+            $debug['editions'][] = [
+              'edition' => $editionKey,
+              'url' => $url,
+              'error' => $message,
+            ];
+          }
+          if ($useCache) {
+            $this->editionCache[$editionKey] = FALSE;
+          }
+          $results[$editionKey] = FALSE;
+        }
       }
     }
 
+    return $results;
+  }
+
+  /**
+   * Append ISBN data from a loaded edition payload.
+   */
+  protected function processEditionPayload(string $editionKey, array $payload, string $workKey, array &$results, int &$sequence, ?array &$debug, bool $preferred = FALSE): void {
     $normalizedWork = $this->normalizeWorkKey($workKey, $payload['works'] ?? [], $editionKey);
     $formatInfo = $this->determineFormat($payload);
 
@@ -554,24 +679,31 @@ class BookIsbnLookup {
     }
 
     if (is_array($debug)) {
-      $entry = [
-        'edition' => $editionKey,
-        'url' => $editionUrl,
-        'format' => $formatInfo['format'],
-        'language' => $formatInfo['language'],
-        'country' => $formatInfo['country'],
-      ];
-      if (!empty($payload['isbn_13'])) {
-        $entry['isbn_13'] = $payload['isbn_13'];
-      }
-      if (!empty($payload['isbn_10'])) {
-        $entry['isbn_10'] = $payload['isbn_10'];
-      }
-      if ($preferred) {
-        $entry['preferred'] = TRUE;
-      }
-      $debug['editions'][] = $entry;
+      $debug['editions'][] = $this->createEditionDebugEntry($editionKey, $payload, $formatInfo, $preferred);
     }
+  }
+
+  /**
+   * Build a consistent debug entry for edition payloads.
+   */
+  protected function createEditionDebugEntry(string $editionKey, array $payload, array $formatInfo, bool $preferred): array {
+    $entry = [
+      'edition' => $editionKey,
+      'url' => 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json',
+      'format' => $formatInfo['format'],
+      'language' => $formatInfo['language'],
+      'country' => $formatInfo['country'],
+    ];
+    if (!empty($payload['isbn_13'])) {
+      $entry['isbn_13'] = $payload['isbn_13'];
+    }
+    if (!empty($payload['isbn_10'])) {
+      $entry['isbn_10'] = $payload['isbn_10'];
+    }
+    if ($preferred) {
+      $entry['preferred'] = TRUE;
+    }
+    return $entry;
   }
 
   /**
@@ -594,10 +726,13 @@ class BookIsbnLookup {
     }
     else {
       try {
-        $response = $this->httpClient->request('GET', $url, [
+        $response = $this->sendOpenLibraryGet($url, [
           'timeout' => 10,
           'connect_timeout' => 4,
-        ]);
+        ], 'work editions');
+      }
+      catch (OpenLibraryApiException $e) {
+        throw $e;
       }
       catch (\Throwable $e) {
         $this->logger->notice('Open Library editions fetch failed for @work: @message', [
@@ -645,6 +780,7 @@ class BookIsbnLookup {
     }
 
     $normalizedWork = $this->normalizeWorkKey($workKey);
+    $editionRequests = [];
     foreach ($entries as $entry) {
       if (!is_array($entry)) {
         continue;
@@ -653,7 +789,7 @@ class BookIsbnLookup {
         $editionKey = ltrim($entry['key'], '/');
         $editionKey = preg_replace('/^books\//', '', $editionKey);
         if ($editionKey !== '' && $editionKey !== $coverKey) {
-          $this->appendEditionIsbns($editionKey, $normalizedWork, $results, $sequence, $debug, $loadedEditions, FALSE);
+          $editionRequests[] = $editionKey;
         }
         continue;
       }
@@ -671,6 +807,20 @@ class BookIsbnLookup {
       $formatInfo = $this->determineFormat($entry);
       foreach ($isbns as $isbn) {
         $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, FALSE, $results, $sequence);
+      }
+    }
+
+    if (!empty($editionRequests)) {
+      $payloads = $this->loadEditionPayloads($editionRequests, $debug, $loadedEditions);
+      foreach ($editionRequests as $editionKey) {
+        if (!array_key_exists($editionKey, $payloads)) {
+          continue;
+        }
+        $payload = $payloads[$editionKey];
+        if (!is_array($payload)) {
+          continue;
+        }
+        $this->processEditionPayload($editionKey, $payload, $normalizedWork, $results, $sequence, $debug, FALSE);
       }
     }
   }
