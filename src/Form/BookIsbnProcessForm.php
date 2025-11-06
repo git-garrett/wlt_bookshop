@@ -434,6 +434,15 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $debug = (bool) (\Drupal::config('wlt_bookshop.settings')->get('debug_logging') ?? FALSE);
+    if ($debug) {
+      \Drupal::logger('wlt_bookshop_batch')->notice('Collecting candidates for bundles: @bundles', [
+        '@bundles' => implode(', ', array_keys($bundle_settings)),
+      ]);
+      if ($limit !== NULL) {
+        \Drupal::logger('wlt_bookshop_batch')->notice('Candidate limit set to @limit.', ['@limit' => $limit]);
+      }
+    }
+
     $all = [];
     $remaining = $limit ?? PHP_INT_MAX;
     foreach ($bundle_settings as $bundle => $settings) {
@@ -454,6 +463,14 @@ class BookIsbnProcessForm extends FormBase {
           break;
         }
         $query->range(0, max(0, $remaining));
+      }
+      if ($debug) {
+        \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle query: requires author field @author, ISBN field @isbn empty, kill switch @kill != 1.', [
+          '@bundle' => $bundle,
+          '@author' => $author_field,
+          '@isbn' => $isbn_field,
+          '@kill' => $kill_field ?: '(none)',
+        ]);
       }
       $ids = $query->execute();
       if (empty($ids)) {
@@ -477,6 +494,42 @@ class BookIsbnProcessForm extends FormBase {
           '@author' => $author_field,
           '@isbn' => $isbn_field,
         ]);
+        $subset = array_slice($ids, 0, min(5, count($ids)));
+        if (!empty($subset)) {
+          /** @var \Drupal\node\NodeInterface[] $nodes_subset */
+          $nodes_subset = \Drupal::entityTypeManager()->getStorage('node')->loadMultiple($subset);
+          foreach ($nodes_subset as $candidate) {
+            $author_values = [];
+            if ($candidate->hasField($author_field)) {
+              foreach ($candidate->get($author_field) as $item) {
+                if (isset($item->value) && $item->value !== '') {
+                  $author_values[] = $item->value;
+                }
+                elseif (isset($item->entity) && $item->entity) {
+                  $author_values[] = $item->entity->label();
+                }
+              }
+            }
+            $isbn_values = [];
+            if ($candidate->hasField($isbn_field)) {
+              foreach ($candidate->get($isbn_field) as $item) {
+                if (isset($item->value)) {
+                  $isbn_values[] = $item->value;
+                }
+              }
+            }
+            $kill_value = NULL;
+            if ($kill_field !== '' && $candidate->hasField($kill_field)) {
+              $kill_value = $candidate->get($kill_field)->value;
+            }
+            \Drupal::logger('wlt_bookshop_batch')->notice('Candidate nid @nid diagnostics: author values=[@authors], isbn values=[@isbns], kill switch=@kill', [
+              '@nid' => $candidate->id(),
+              '@authors' => $author_values ? implode('; ', $author_values) : '(empty)',
+              '@isbns' => $isbn_values ? implode('; ', $isbn_values) : '(empty)',
+              '@kill' => $kill_value === NULL ? '(none)' : $kill_value,
+            ]);
+          }
+        }
       }
       if ($limit !== NULL) {
         $remaining = $limit - count($all);
