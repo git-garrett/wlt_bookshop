@@ -9,7 +9,7 @@ use Drupal\node\NodeInterface;
 use Drupal\wlt_bookshop\Service\BookIsbnLookup;
 
 /**
- * Admin form to trigger ISBN lookup for book reviews.
+ * Admin form to trigger ISBN lookup for configured bundles.
  */
 class BookIsbnProcessForm extends FormBase {
 
@@ -25,13 +25,13 @@ class BookIsbnProcessForm extends FormBase {
    */
   public function buildForm(array $form, FormStateInterface $form_state): array {
     $form['description'] = [
-      '#markup' => $this->t('Finds book_review nodes missing an ISBN and attempts to populate it using Open Library based on the value of field_author.'),
+      '#markup' => $this->t('Finds enabled bundles missing ISBNs and attempts to populate them using Open Library based on the configured author field.'),
     ];
 
     $form['nid'] = [
       '#type' => 'number',
       '#title' => $this->t('Specific node ID (optional)'),
-      '#description' => $this->t('Process a single book_review node by its NID. When provided, the limit below is ignored.'),
+      '#description' => $this->t('Process a single node by its NID. When provided, the limit below is ignored.'),
       '#min' => 1,
     ];
 
@@ -46,8 +46,8 @@ class BookIsbnProcessForm extends FormBase {
     ];
     $form['process_all'] = [
       '#type' => 'checkbox',
-      '#title' => $this->t('Process all book reviews needing ISBNs'),
-      '#description' => $this->t('When checked, the form will continue through every matching book_review node in batches. Leave unchecked to process only up to the limit above.'),
+      '#title' => $this->t('Process all enabled bundles needing ISBNs'),
+      '#description' => $this->t('When checked, the form will continue through every matching node in the selected bundles in batches. Leave unchecked to process only up to the limit above.'),
     ];
     $form['batch_size'] = [
       '#type' => 'number',
@@ -126,7 +126,16 @@ class BookIsbnProcessForm extends FormBase {
     $batchSize = max(1, min(500, $batchSize ?: 100));
 
     $storage = \Drupal::entityTypeManager()->getStorage('node');
-    $nids = [];
+    $bundle_settings = array_filter(
+      wlt_bookshop_get_bundle_configuration(),
+      static function (array $settings): bool {
+        return !empty($settings['author_field']) && !empty($settings['isbn_field']);
+      }
+    );
+    if (empty($bundle_settings)) {
+      $this->messenger()->addStatus($this->t('No bundles are configured for Bookshop processing.'));
+      return;
+    }
 
     // If a specific NID is provided, validate and process only that node.
     if ($specific_nid > 0) {
@@ -135,11 +144,13 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addError($this->t('Node @nid not found.', ['@nid' => $specific_nid]));
         return;
       }
-      if ($node->bundle() !== 'book_review') {
-        $this->messenger()->addError($this->t('Node @nid is not a book_review.', ['@nid' => $specific_nid]));
+      if (!wlt_bookshop_bundle_is_enabled($node->bundle())) {
+        $this->messenger()->addError($this->t('Node @nid does not belong to a configured bundle.', ['@nid' => $specific_nid]));
         return;
       }
-      if (!$node->hasField('field_author') || !$node->hasField('field_isbn')) {
+      $author_field = wlt_bookshop_get_bundle_field($node->bundle(), 'author_field') ?? 'field_author';
+      $isbn_field = wlt_bookshop_get_bundle_field($node->bundle(), 'isbn_field') ?? 'field_isbn';
+      if (!$node->hasField($author_field) || !$node->hasField($isbn_field)) {
         $this->messenger()->addError($this->t('Node @nid is missing required fields.', ['@nid' => $specific_nid]));
         return;
       }
@@ -154,16 +165,9 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     if ($processAll) {
-      $query = \Drupal::entityQuery('node')
-        ->accessCheck(FALSE)
-        ->condition('type', 'book_review')
-        ->exists('field_author')
-        ->notExists('field_isbn')
-        ->sort('changed', 'DESC');
-
-      $all_nids = $query->execute();
+      $all_nids = static::collectCandidateNodeIds($bundle_settings);
       if (empty($all_nids)) {
-        $this->messenger()->addStatus($this->t('No book_review nodes require processing.'));
+        $this->messenger()->addStatus($this->t('No nodes require processing.'));
         return;
       }
 
@@ -173,17 +177,9 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     // Otherwise, process a batch of nodes up to the limit.
-    $query = \Drupal::entityQuery('node')
-      ->accessCheck(FALSE)
-      ->condition('type', 'book_review')
-      ->exists('field_author')
-      ->notExists('field_isbn')
-      ->range(0, $limit)
-      ->sort('changed', 'DESC');
-
-    $nids = $query->execute();
+    $nids = static::collectCandidateNodeIds($bundle_settings, $limit);
     if (empty($nids)) {
-      $this->messenger()->addStatus($this->t('No book_review nodes require processing.'));
+      $this->messenger()->addStatus($this->t('No nodes require processing.'));
       return;
     }
 
@@ -209,7 +205,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $batch = [
-      'title' => $this->t('Processing book review ISBN lookups'),
+      'title' => $this->t('Processing Bookshop ISBN lookups'),
       'operations' => $operations,
       'finished' => [static::class, 'batchFinished'],
       'init_message' => $this->t('Starting ISBN lookup...'),
@@ -278,11 +274,11 @@ class BookIsbnProcessForm extends FormBase {
     $updated = $results['updated'] ?? 0;
 
     if ($updated > 0) {
-      $messenger->addStatus(t('Updated ISBN on @count book review nodes (checked @checked).', [
+      $messenger->addStatus(t('Updated ISBN on @count nodes (checked @checked).', [
         '@count' => $updated,
         '@checked' => $checked,
       ]));
-      $logger->notice('Manual process updated ISBN on @count book review nodes.', ['@count' => $updated]);
+      $logger->notice('Manual process updated ISBN on @count nodes.', ['@count' => $updated]);
     }
     else {
       $messenger->addStatus(t('Processed @checked nodes, no updates were necessary.', [
@@ -324,10 +320,13 @@ class BookIsbnProcessForm extends FormBase {
       if (!$node instanceof NodeInterface) {
         continue;
       }
-      if ($node->bundle() !== 'book_review') {
+      $bundle = $node->bundle();
+      if (!wlt_bookshop_bundle_is_enabled($bundle)) {
         continue;
       }
-      if (!$node->hasField('field_author') || !$node->hasField('field_isbn')) {
+      $author_field = wlt_bookshop_get_bundle_field($bundle, 'author_field') ?? 'field_author';
+      $isbn_field = wlt_bookshop_get_bundle_field($bundle, 'isbn_field') ?? 'field_isbn';
+      if (!$node->hasField($author_field) || !$node->hasField($isbn_field)) {
         continue;
       }
       if (wlt_bookshop_is_kill_switch_enabled($node)) {
@@ -367,7 +366,7 @@ class BookIsbnProcessForm extends FormBase {
 
       $items = NULL;
       if (!empty($found)) {
-        $existing_items = $node->get('field_isbn')->getValue();
+        $existing_items = $node->get($isbn_field)->getValue();
         $existing = [];
         foreach ($existing_items as $item) {
           if (isset($item['value']) && $item['value'] !== '') {
@@ -387,7 +386,7 @@ class BookIsbnProcessForm extends FormBase {
           $items[] = ['value' => $isbn];
         }
         try {
-          $node->set('field_isbn', $items);
+          $node->set($isbn_field, $items);
           $node->save();
           $added_here = count($items) - $before;
           if ($added_here > 0) {
@@ -416,6 +415,78 @@ class BookIsbnProcessForm extends FormBase {
         $debugCombined .= static::formatDebugSummary($node->id(), $title, $authors, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
       }
     }
+  }
+
+  /**
+   * Collect node IDs that require ISBN processing.
+   *
+   * @param array $bundle_settings
+   *   Bundle configuration array keyed by bundle.
+   * @param int|null $limit
+   *   Optional maximum number of node IDs to return.
+   *
+   * @return int[]
+   *   Ordered node IDs sorted by most recently changed first.
+   */
+  protected static function collectCandidateNodeIds(array $bundle_settings, ?int $limit = NULL): array {
+    if (empty($bundle_settings)) {
+      return [];
+    }
+
+    $all = [];
+    $remaining = $limit ?? PHP_INT_MAX;
+    foreach ($bundle_settings as $bundle => $settings) {
+      $isbn_field = $settings['isbn_field'] ?? 'field_isbn';
+      $author_field = $settings['author_field'] ?? 'field_author';
+      $query = \Drupal::entityQuery('node')
+        ->accessCheck(FALSE)
+        ->condition('type', $bundle)
+        ->exists($author_field)
+        ->notExists($isbn_field)
+        ->sort('changed', 'DESC');
+      $kill_field = $settings['kill_switch_field'] ?? '';
+      if ($kill_field !== '') {
+        $query->condition($kill_field, '1', '<>');
+      }
+      if ($limit !== NULL) {
+        if ($remaining <= 0) {
+          break;
+        }
+        $query->range(0, max(0, $remaining));
+      }
+      $ids = $query->execute();
+      if (empty($ids)) {
+        continue;
+      }
+      foreach ($ids as $id) {
+        $all[(int) $id] = TRUE;
+      }
+      if ($limit !== NULL) {
+        $remaining = $limit - count($all);
+        if ($remaining <= 0) {
+          break;
+        }
+      }
+    }
+
+    if (empty($all)) {
+      return [];
+    }
+
+    $storage = \Drupal::entityTypeManager()->getStorage('node');
+    /** @var \Drupal\node\NodeInterface[] $nodes */
+    $nodes = $storage->loadMultiple(array_keys($all));
+    usort($nodes, static function (NodeInterface $a, NodeInterface $b): int {
+      return $b->getChangedTime() <=> $a->getChangedTime();
+    });
+    $ordered = array_map(static function (NodeInterface $node): int {
+      return (int) $node->id();
+    }, $nodes);
+
+    if ($limit !== NULL && count($ordered) > $limit) {
+      $ordered = array_slice($ordered, 0, $limit);
+    }
+    return $ordered;
   }
 
   /**

@@ -2,7 +2,7 @@ wlt_bookshop.isbn_process:
   path: '/admin/content/wlt-bookshop/isbn-process'
   defaults:
     _form: '\Drupal\wlt_bookshop\Form\BookIsbnProcessForm'
-    _title: 'Process Book Review ISBNs'
+    _title: 'Process ISBNs for Bookshop bundles'
   requirements:
     _permission: 'administer nodes'
   options:
