@@ -45,6 +45,10 @@
   background: #fff7f7;
 }
 
+[data-wlt-bookshop-debug-log] {
+  display: none !important;
+}
+
 @media (max-width: 640px) {
   .wlt-bookshop-card {
     flex: 1 1 100%;
