@@ -191,6 +191,10 @@
   function processGrid(grid) {
     var permission = grid.getAttribute('data-wlt-bookshop-permission') || 'unknown';
     var uid = grid.getAttribute('data-wlt-bookshop-uid') || '0';
+    var staleDebug = grid.querySelector('[data-wlt-bookshop-debug-log]');
+    if (staleDebug && typeof staleDebug.remove === 'function') {
+      staleDebug.remove();
+    }
 
     var cardsContainer = grid.querySelector('[data-wlt-bookshop-cards]');
     if (!cardsContainer) {
@@ -257,6 +261,15 @@
   }
 
   ready(function () {
+    var anyDebugLogs = document.querySelectorAll('[data-wlt-bookshop-debug-log]');
+    if (anyDebugLogs.length) {
+      anyDebugLogs.forEach(function (el) {
+        if (typeof el.remove === 'function') {
+          el.remove();
+        }
+      });
+    }
+
     var grids = Array.prototype.slice.call(document.querySelectorAll('[data-wlt-bookshop-grid]'));
     if (!grids.length) {
       return;
