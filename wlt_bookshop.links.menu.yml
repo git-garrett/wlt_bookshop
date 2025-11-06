@@ -4,4 +4,9 @@ wlt_bookshop.isbn_process_link:
   route_name: wlt_bookshop.isbn_process
   parent: system.admin_content
   weight: 100
-
+wlt_bookshop.settings_link:
+  title: 'WLT Bookshop'
+  description: 'Configure WLT Bookshop bundle and field mappings.'
+  route_name: wlt_bookshop.settings
+  parent: system.admin_config_content
+  weight: 100

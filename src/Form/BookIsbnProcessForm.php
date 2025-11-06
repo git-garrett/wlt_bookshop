@@ -330,6 +330,12 @@ class BookIsbnProcessForm extends FormBase {
       if (!$node->hasField('field_author') || !$node->hasField('field_isbn')) {
         continue;
       }
+      if ($node->hasField('field_isbn_kill_switch') && !$node->get('field_isbn_kill_switch')->isEmpty()) {
+        $killSwitchValue = (string) $node->get('field_isbn_kill_switch')->value;
+        if ($killSwitchValue === '1') {
+          continue;
+        }
+      }
       $authors = static::getAuthorNames($node);
       $title = static::getSearchTitle($node);
       if ($title === '' && empty($authors)) {

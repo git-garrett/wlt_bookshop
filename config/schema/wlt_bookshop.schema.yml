@@ -1,0 +1,24 @@
+wlt_bookshop.settings:
+  type: config_object
+  label: 'WLT Bookshop settings'
+  mapping:
+    bundle_settings:
+      type: mapping
+      label: 'Bundle configurations'
+      mapping:
+        '*':
+          type: mapping
+          label: 'Bundle configuration'
+          mapping:
+            author_field:
+              type: string
+              label: 'Author field'
+            isbn_field:
+              type: string
+              label: 'ISBN field'
+            editor_field:
+              type: string
+              label: 'Editor field'
+            kill_switch_field:
+              type: string
+              label: 'Kill switch field'

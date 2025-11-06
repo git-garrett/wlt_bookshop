@@ -18,6 +18,31 @@ class BookIsbnLookup {
   /** @var \Psr\Log\LoggerInterface */
   protected $logger;
 
+  /**
+   * Cached author lookups for the current request when debug is disabled.
+   *
+   * @var array<string, array>
+   */
+  protected array $authorCache = [];
+
+  /**
+   * Cached edition payloads keyed by edition identifier.
+   *
+   * Stores FALSE for failed lookups to avoid repeated HTTP requests.
+   *
+   * @var array<string, array|false>
+   */
+  protected array $editionCache = [];
+
+  /**
+   * Cached work editions payloads keyed by work identifier.
+   *
+   * Stores FALSE for failed lookups to avoid repeated HTTP requests.
+   *
+   * @var array<string, array|false>
+   */
+  protected array $workEditionsCache = [];
+
   public function __construct(ClientInterface $http_client, LoggerInterface $logger) {
     $this->httpClient = $http_client;
     $this->logger = $logger;
@@ -307,6 +332,12 @@ class BookIsbnLookup {
       return [];
     }
 
+    $useCache = !is_array($debug);
+    $cacheKey = Unicode::strtolower($author);
+    if ($useCache && isset($this->authorCache[$cacheKey])) {
+      return $this->authorCache[$cacheKey];
+    }
+
     $searchUrl = 'https://openlibrary.org/search.json';
     $query = [
       'author' => $author,
@@ -423,6 +454,9 @@ class BookIsbnLookup {
     if (is_array($debug)) {
       $debug['found_isbns'] = $final;
     }
+    elseif ($useCache) {
+      $this->authorCache[$cacheKey] = $final;
+    }
     return $final;
   }
 
@@ -437,48 +471,72 @@ class BookIsbnLookup {
     $loadedEditions[$editionKey] = TRUE;
 
     $editionUrl = 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json';
-    try {
-      $response = $this->httpClient->request('GET', $editionUrl, [
-        'timeout' => 8,
-        'connect_timeout' => 4,
-      ]);
-    }
-    catch (\Throwable $e) {
-      $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
-        '@edition' => $editionKey,
-        '@message' => $e->getMessage(),
-      ]);
-      if (is_array($debug)) {
-        $debug['editions'][] = [
-          'edition' => $editionKey,
-          'url' => $editionUrl,
-          'error' => $e->getMessage(),
-        ];
+    $useCache = !is_array($debug);
+    $payload = NULL;
+    if ($useCache && array_key_exists($editionKey, $this->editionCache)) {
+      $cached = $this->editionCache[$editionKey];
+      if ($cached === FALSE) {
+        return;
       }
-      return;
+      $payload = $cached;
     }
+    else {
+      try {
+        $response = $this->httpClient->request('GET', $editionUrl, [
+          'timeout' => 8,
+          'connect_timeout' => 4,
+        ]);
+      }
+      catch (\Throwable $e) {
+        $this->logger->notice('Open Library edition fetch failed for @edition: @message', [
+          '@edition' => $editionKey,
+          '@message' => $e->getMessage(),
+        ]);
+        if (is_array($debug)) {
+          $debug['editions'][] = [
+            'edition' => $editionKey,
+            'url' => $editionUrl,
+            'error' => $e->getMessage(),
+          ];
+        }
+        elseif ($useCache) {
+          $this->editionCache[$editionKey] = FALSE;
+        }
+        return;
+      }
 
-    if ($response->getStatusCode() !== 200) {
-      if (is_array($debug)) {
-        $debug['editions'][] = [
-          'edition' => $editionKey,
-          'url' => $editionUrl,
-          'status' => $response->getStatusCode(),
-        ];
+      if ($response->getStatusCode() !== 200) {
+        if (is_array($debug)) {
+          $debug['editions'][] = [
+            'edition' => $editionKey,
+            'url' => $editionUrl,
+            'status' => $response->getStatusCode(),
+          ];
+        }
+        elseif ($useCache) {
+          $this->editionCache[$editionKey] = FALSE;
+        }
+        return;
       }
-      return;
-    }
 
-    $payload = json_decode((string) $response->getBody(), TRUE);
-    if (!is_array($payload)) {
-      if (is_array($debug)) {
-        $debug['editions'][] = [
-          'edition' => $editionKey,
-          'url' => $editionUrl,
-          'decoded' => 'invalid',
-        ];
+      $payload = json_decode((string) $response->getBody(), TRUE);
+      if (!is_array($payload)) {
+        if (is_array($debug)) {
+          $debug['editions'][] = [
+            'edition' => $editionKey,
+            'url' => $editionUrl,
+            'decoded' => 'invalid',
+          ];
+        }
+        elseif ($useCache) {
+          $this->editionCache[$editionKey] = FALSE;
+        }
+        return;
       }
-      return;
+
+      if ($useCache) {
+        $this->editionCache[$editionKey] = $payload;
+      }
     }
 
     $normalizedWork = $this->normalizeWorkKey($workKey, $payload['works'] ?? [], $editionKey);
@@ -526,45 +584,69 @@ class BookIsbnLookup {
       return;
     }
     $url = 'https://openlibrary.org' . $workKey . '/editions.json?limit=500';
-    try {
-      $response = $this->httpClient->request('GET', $url, [
-        'timeout' => 10,
-        'connect_timeout' => 4,
-      ]);
-    }
-    catch (\Throwable $e) {
-      $this->logger->notice('Open Library editions fetch failed for @work: @message', [
-        '@work' => $workKey,
-        '@message' => $e->getMessage(),
-      ]);
-      if (is_array($debug)) {
-        $debug['works'][] = [
-          'work' => $workKey,
-          'url' => $url,
-          'error' => $e->getMessage(),
-        ];
+    $useCache = !is_array($debug);
+    $entries = NULL;
+    if ($useCache && array_key_exists($workKey, $this->workEditionsCache)) {
+      $cached = $this->workEditionsCache[$workKey];
+      if ($cached === FALSE) {
+        return;
       }
-      return;
+      $entries = $cached;
     }
-
-    if ($response->getStatusCode() !== 200) {
-      if (is_array($debug)) {
-        $debug['works'][] = [
-          'work' => $workKey,
-          'url' => $url,
-          'status' => $response->getStatusCode(),
-        ];
+    else {
+      try {
+        $response = $this->httpClient->request('GET', $url, [
+          'timeout' => 10,
+          'connect_timeout' => 4,
+        ]);
       }
-      return;
-    }
+      catch (\Throwable $e) {
+        $this->logger->notice('Open Library editions fetch failed for @work: @message', [
+          '@work' => $workKey,
+          '@message' => $e->getMessage(),
+        ]);
+        if (is_array($debug)) {
+          $debug['works'][] = [
+            'work' => $workKey,
+            'url' => $url,
+            'error' => $e->getMessage(),
+          ];
+        }
+        elseif ($useCache) {
+          $this->workEditionsCache[$workKey] = FALSE;
+        }
+        return;
+      }
 
-    $payload = json_decode((string) $response->getBody(), TRUE);
-    if (!is_array($payload) || empty($payload['entries']) || !is_array($payload['entries'])) {
-      return;
+      if ($response->getStatusCode() !== 200) {
+        if (is_array($debug)) {
+          $debug['works'][] = [
+            'work' => $workKey,
+            'url' => $url,
+            'status' => $response->getStatusCode(),
+          ];
+        }
+        elseif ($useCache) {
+          $this->workEditionsCache[$workKey] = FALSE;
+        }
+        return;
+      }
+
+      $payload = json_decode((string) $response->getBody(), TRUE);
+      if (!is_array($payload) || empty($payload['entries']) || !is_array($payload['entries'])) {
+        if ($useCache) {
+          $this->workEditionsCache[$workKey] = FALSE;
+        }
+        return;
+      }
+      $entries = $payload['entries'];
+      if ($useCache) {
+        $this->workEditionsCache[$workKey] = $entries;
+      }
     }
 
     $normalizedWork = $this->normalizeWorkKey($workKey);
-    foreach ($payload['entries'] as $entry) {
+    foreach ($entries as $entry) {
       if (!is_array($entry)) {
         continue;
       }
