@@ -171,6 +171,12 @@ class WltBookshopSettingsForm extends ConfigFormBase {
         '#required' => FALSE,
         '#description' => $this->t('Optional boolean field to disable ISBN lookups and link injection on specific nodes.'),
       ];
+      $form['bundle_' . $bundle_id]['bypass_uid_check'] = [
+        '#type' => 'checkbox',
+        '#title' => $this->t('Allow widget rendering for all users'),
+        '#default_value' => !empty($settings['bypass_uid_check']),
+        '#description' => $this->t('When enabled the Bookshop widget renders regardless of the viewer user ID.'),
+      ];
     }
 
     // Cache field options for submit processing.
@@ -246,6 +252,7 @@ class WltBookshopSettingsForm extends ConfigFormBase {
         'isbn_field' => $form_state->getValue(['bundle_' . $bundle_id, 'isbn_field']) ?: '',
         'editor_field' => $form_state->getValue(['bundle_' . $bundle_id, 'editor_field']) ?: '',
         'kill_switch_field' => $form_state->getValue(['bundle_' . $bundle_id, 'kill_switch_field']) ?: '',
+        'bypass_uid_check' => (bool) $form_state->getValue(['bundle_' . $bundle_id, 'bypass_uid_check']),
       ];
     }
 

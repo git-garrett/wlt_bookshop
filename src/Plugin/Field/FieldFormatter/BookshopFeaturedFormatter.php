@@ -78,7 +78,16 @@ class BookshopFeaturedFormatter extends FormatterBase {
   public function viewElements(FieldItemListInterface $items, $langcode) {
     $current_user = \Drupal::currentUser();
     $uid = $current_user ? (int) $current_user->id() : 0;
-    $allowed = in_array($uid, [3465, 1234], TRUE);
+    $entity = $items->getEntity();
+    $bypassUid = FALSE;
+    if ($entity && method_exists($entity, 'bundle')) {
+      $bundle = $entity->bundle();
+      if (is_string($bundle) && wlt_bookshop_bundle_is_enabled($bundle)) {
+        $settings = wlt_bookshop_get_bundle_settings($bundle);
+        $bypassUid = !empty($settings['bypass_uid_check']);
+      }
+    }
+    $allowed = $bypassUid || in_array($uid, [3465, 1234], TRUE);
 
     $affiliate = trim((string) $this->getSetting('affiliate_id'));
     $full_info = $this->getSetting('full_info') ? 'true' : 'false';
@@ -93,7 +102,6 @@ class BookshopFeaturedFormatter extends FormatterBase {
       return [];
     }
 
-    $entity = $items->getEntity();
     $cache = [
       'contexts' => $entity ? $entity->getCacheContexts() : [],
       'tags' => $entity ? $entity->getCacheTags() : [],

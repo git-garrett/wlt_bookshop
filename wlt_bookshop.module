@@ -467,6 +467,7 @@ function wlt_bookshop_default_bundle_settings(): array {
     'isbn_field' => 'field_isbn',
     'editor_field' => 'field_editor',
     'kill_switch_field' => 'field_isbn_kill_switch',
+    'bypass_uid_check' => FALSE,
   ];
 }
 
@@ -507,7 +508,9 @@ function wlt_bookshop_get_bundle_configuration(): array {
     if (!is_array($settings)) {
       $settings = [];
     }
-    $cache[$bundle] = $settings + $defaults;
+    $computed = $settings + $defaults;
+    $computed['bypass_uid_check'] = !empty($computed['bypass_uid_check']);
+    $cache[$bundle] = $computed;
   }
   return $cache;
 }

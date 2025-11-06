@@ -4,4 +4,5 @@ bundle_settings:
     isbn_field: field_isbn
     editor_field: field_editor
     kill_switch_field: field_isbn_kill_switch
+    bypass_uid_check: false
 debug_logging: false

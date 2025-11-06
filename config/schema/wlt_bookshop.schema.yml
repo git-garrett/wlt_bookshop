@@ -22,6 +22,9 @@ wlt_bookshop.settings:
             kill_switch_field:
               type: string
               label: 'Kill switch field'
+            bypass_uid_check:
+              type: boolean
+              label: 'Bypass UID restriction for widgets'
     debug_logging:
       type: boolean
       label: 'Enable settings debug logging'
