@@ -17,32 +17,6 @@
     return new Date().toISOString();
   }
 
-  function isDebugEnabled(grid) {
-    if (!grid) {
-      return false;
-    }
-    return grid.getAttribute('data-wlt-bookshop-debug-enabled') === '1';
-  }
-
-  function appendLog(grid, level, message) {
-    if (!isDebugEnabled(grid)) {
-      return;
-    }
-    var container = grid.querySelector('[data-wlt-bookshop-debug-log]');
-    if (!container) {
-      container = document.createElement('ul');
-      container.setAttribute('data-wlt-bookshop-debug-log', '1');
-      container.className = 'wlt-bookshop-debug__log';
-      grid.appendChild(container);
-    }
-    var line = document.createElement('li');
-    line.setAttribute('data-level', level || 'info');
-    var stamp = new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    line.textContent = "[" + stamp + "] " + message;
-    container.appendChild(line);
-    container.scrollTop = container.scrollHeight;
-  }
-
   function withTimeout(promise, ms) {
     return new Promise(function (resolve) {
       var settled = false;
@@ -193,26 +167,6 @@
     });
   }
 
-  function describeResult(result) {
-    if (!result) {
-      return 'no result returned';
-    }
-    var parts = [];
-    parts.push((result.method || 'unknown method').toUpperCase());
-    if (typeof result.status === 'number') {
-      parts.push('status ' + result.status);
-    }
-    if (result.verdict === 'opaque') {
-      parts.push('opaque response (treated as success)');
-    } else {
-      parts.push('verdict ' + result.verdict);
-    }
-    if (result.error) {
-      parts.push('error: ' + result.error);
-    }
-    return parts.join(', ');
-  }
-
   function updateCardCount(grid) {
     var cardsContainer = grid.querySelector('[data-wlt-bookshop-cards]');
     var remaining = 0;
@@ -237,29 +191,24 @@
   function processGrid(grid) {
     var permission = grid.getAttribute('data-wlt-bookshop-permission') || 'unknown';
     var uid = grid.getAttribute('data-wlt-bookshop-uid') || '0';
-    appendLog(grid, 'info', 'Grid detected (uid ' + uid + ', permission ' + permission + ').');
 
     var cardsContainer = grid.querySelector('[data-wlt-bookshop-cards]');
     if (!cardsContainer) {
-      appendLog(grid, 'error', 'No widget container found in markup.');
       updateCardCount(grid);
       addSummaryData(grid, 0, 0);
       return;
     }
 
     var cards = Array.prototype.slice.call(cardsContainer.querySelectorAll('[data-wlt-bookshop-card]'));
-    appendLog(grid, 'info', 'Initial widget count: ' + cards.length + '.');
 
     if (permission !== 'allowed') {
       grid.classList.add('wlt-bookshop-permission-denied');
-      appendLog(grid, 'warn', 'Permission denied by formatter configuration. Skipping widget processing.');
       updateCardCount(grid);
       addSummaryData(grid, 0, 0);
       return;
     }
 
     if (!cards.length) {
-      appendLog(grid, 'warn', 'No widgets available to evaluate.');
       updateCardCount(grid);
       addSummaryData(grid, 0, 0);
       return;
@@ -272,10 +221,6 @@
     function finalize() {
       var remaining = updateCardCount(grid);
       addSummaryData(grid, kept, removed);
-      appendLog(grid, 'info', 'Evaluation complete: kept ' + kept + ', removed ' + removed + ', remaining in DOM ' + remaining + '.');
-      if (remaining === 0) {
-        appendLog(grid, 'warn', 'All widgets removed; grid marked empty.');
-      }
     }
 
     cards.forEach(function (card, index) {
@@ -285,7 +230,6 @@
       if (!iframe) {
         removed += 1;
         card.remove();
-        appendLog(grid, 'error', 'Widget #' + ordinal + ' (EAN ' + ean + ') missing iframe element; removed from DOM.');
         pending -= 1;
         if (pending === 0) {
           finalize();
@@ -293,23 +237,16 @@
         return;
       }
 
-      appendLog(grid, 'info', 'Checking widget #' + ordinal + ' (EAN ' + ean + ').');
-
       checkIframe(iframe).then(function (result) {
-        appendLog(grid, 'info', 'Widget #' + ordinal + ' GET result: ' + describeResult(result) + '.');
-
         if (result.allow) {
           kept += 1;
-          appendLog(grid, 'info', 'Widget #' + ordinal + ' kept (' + describeResult(result) + ').');
         } else {
           removed += 1;
           card.remove();
-          appendLog(grid, 'warn', 'Widget #' + ordinal + ' removed (' + describeResult(result) + ').');
         }
       }).catch(function (error) {
         removed += 1;
         card.remove();
-        appendLog(grid, 'error', 'Widget #' + ordinal + ' threw exception: ' + (error && error.message ? error.message : String(error)));
       }).then(function () {
         pending -= 1;
         if (pending === 0) {
