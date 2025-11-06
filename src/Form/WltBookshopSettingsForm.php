@@ -129,6 +129,7 @@ class WltBookshopSettingsForm extends ConfigFormBase {
         '#type' => 'details',
         '#title' => $this->t('@label configuration', ['@label' => $label]),
         '#open' => in_array($bundle_id, $enabled_default, TRUE),
+        '#tree' => TRUE,
         '#states' => [
           'visible' => [
             ':input[name="enabled_bundles[' . $bundle_id . ']"]' => ['checked' => TRUE],
