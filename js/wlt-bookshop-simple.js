@@ -17,7 +17,17 @@
     return new Date().toISOString();
   }
 
+  function isDebugEnabled(grid) {
+    if (!grid) {
+      return false;
+    }
+    return grid.getAttribute('data-wlt-bookshop-debug-enabled') === '1';
+  }
+
   function appendLog(grid, level, message) {
+    if (!isDebugEnabled(grid)) {
+      return;
+    }
     var container = grid.querySelector('[data-wlt-bookshop-debug-log]');
     if (!container) {
       container = document.createElement('ul');
