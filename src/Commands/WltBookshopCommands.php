@@ -51,7 +51,7 @@ class WltBookshopCommands extends DrushCommands {
     $debug = !empty($options['debug']);
 
     $values = [
-      'nid' => $nid,
+      'nid' => $nid > 0 ? $nid : '',
       'limit' => $limit,
       'process_all' => $processAll,
       'batch_size' => $batchSize,
@@ -82,4 +82,3 @@ class WltBookshopCommands extends DrushCommands {
   }
 
 }
-
