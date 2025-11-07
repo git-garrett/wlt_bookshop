@@ -353,11 +353,16 @@ class BookIsbnProcessForm extends FormBase {
 
       $found = [];
       $debugInfo = $debugEnabled ? [] : NULL;
+      $thisBatchLogger = function (string $message, array $context = []) use ($logger, $node) {
+        $logger->notice('[NID @nid] ' . $message, ['@nid' => $node->id()] + $context);
+      };
+      $thisBatchLogger('Starting ISBN lookup', ['title' => $title]);
       foreach ($authors as $authorName) {
         if ($authorName === '') {
           continue;
         }
         $list = [];
+        $thisBatchLogger('Searching author "@author".', ['@author' => $authorName]);
         if (method_exists($lookup, 'getIsbnsByAuthor')) {
           $list = $debugEnabled
             ? $lookup->getIsbnsByAuthor($authorName, $debugInfo)
@@ -369,6 +374,7 @@ class BookIsbnProcessForm extends FormBase {
             : $lookup->getIsbnByAuthor($authorName);
           $list = $single ? [$single] : [];
         }
+        $thisBatchLogger('Author "@author" returned @count ISBN candidates.', ['@author' => $authorName, '@count' => count((array) $list)]);
         foreach ((array) $list as $isbn) {
           $normalized = \wlt_bookshop_normalize_isbn((string) $isbn);
           if ($normalized) {
@@ -398,6 +404,7 @@ class BookIsbnProcessForm extends FormBase {
         foreach (array_keys($existing) as $isbn) {
           $items[] = ['value' => $isbn];
         }
+        $thisBatchLogger('Saving @count ISBN(s) to field @field.', ['@field' => $isbn_field, '@count' => count($items)]);
         try {
           $node->set($isbn_field, $items);
           $node->save();
