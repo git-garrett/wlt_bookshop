@@ -15,7 +15,7 @@ use Psr\Log\LoggerInterface;
  */
 class BookIsbnLookup {
   private const OPEN_LIBRARY_USER_AGENT = 'WorldLiteratureToday (staff@evenvision.com)';
-  private const OPEN_LIBRARY_RATE_LIMIT = 6;
+  private const OPEN_LIBRARY_RATE_LIMIT = 2;
 
   /** @var \GuzzleHttp\ClientInterface */
   protected $httpClient;
@@ -221,7 +221,7 @@ class BookIsbnLookup {
     $searchUrl = 'https://openlibrary.org/search.json';
     $query = [
       'author' => $author,
-      'limit' => 10,
+      'limit' => 250,
     ];
 
     try {
@@ -391,7 +391,7 @@ class BookIsbnLookup {
     $searchUrl = 'https://openlibrary.org/search.json';
     $query = [
       'author' => $author,
-      'limit' => 50,
+      'limit' => 250,
     ];
 
     try {
