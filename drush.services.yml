@@ -1,0 +1,7 @@
+services:
+  wlt_bookshop.drush_commands:
+    class: Drupal\wlt_bookshop\Commands\WltBookshopCommands
+    arguments:
+      - '@form_builder'
+    tags:
+      - { name: drush.command }
