@@ -18,7 +18,7 @@ class BookIsbnLookup {
 
   private const OPEN_LIBRARY_USER_AGENT = 'WorldLiteratureToday (staff@evenvision.com)';
   private const OPEN_LIBRARY_RATE_LIMIT = 1; 
-  private const OPEN_LIBRARY_WINDOW_SECONDS = 2; 
+  private const OPEN_LIBRARY_WINDOW_SECONDS = 1.5; 
 
   /** @var \GuzzleHttp\ClientInterface */
   protected $httpClient;
@@ -111,12 +111,13 @@ class BookIsbnLookup {
    */
   protected function throttleOpenLibraryRequests(): void {
     $now = microtime(TRUE);
-    if ($this->openLibraryWindowStart === 0.0 || ($now - $this->openLibraryWindowStart) >= 1.0) {
+    $window = self::OPEN_LIBRARY_WINDOW_SECONDS;
+    if ($this->openLibraryWindowStart === 0.0 || ($now - $this->openLibraryWindowStart) >= $window) {
       $this->openLibraryWindowStart = $now;
       $this->openLibraryWindowCount = 0;
     }
     if ($this->openLibraryWindowCount >= self::OPEN_LIBRARY_RATE_LIMIT) {
-      $sleepSeconds = ($this->openLibraryWindowStart + 1.0) - $now;
+      $sleepSeconds = ($this->openLibraryWindowStart + $window) - $now;
       if ($sleepSeconds > 0) {
         usleep((int) ceil($sleepSeconds * 1_000_000));
       }
