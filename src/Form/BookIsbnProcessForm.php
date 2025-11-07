@@ -155,11 +155,12 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addError($this->t('Node @nid is missing required fields.', ['@nid' => $specific_nid]));
         return;
       }
+      $title_authors = static::getTitleAuthors($node);
       $authors = static::getAuthorNames($node);
       $translators = static::getTranslatorNames($node);
       $title = static::getSearchTitle($node);
-      if ($title === '' && empty($authors) && empty($translators)) {
-        $this->messenger()->addStatus($this->t('Node @nid has no usable title/author/translator to search.', ['@nid' => $specific_nid]));
+      if ($title === '' && empty($title_authors) && empty($authors) && empty($translators)) {
+        $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
       $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose);
@@ -374,10 +375,11 @@ class BookIsbnProcessForm extends FormBase {
       if (wlt_bookshop_is_kill_switch_enabled($node)) {
         continue;
       }
+      $title_authors = static::getTitleAuthors($node);
       $authors = static::getAuthorNames($node);
       $translators = static::getTranslatorNames($node);
       $title = static::getSearchTitle($node);
-      if ($title === '' && empty($authors) && empty($translators)) {
+      if ($title === '' && empty($title_authors) && empty($authors) && empty($translators)) {
         continue;
       }
 
@@ -390,32 +392,33 @@ class BookIsbnProcessForm extends FormBase {
 
       $found = [];
       $debugInfo = $debugEnabled ? [] : NULL;
-      foreach (['author' => $authors, 'translator' => $translators] as $type => $names) {
-        foreach ($names as $personName) {
-          if ($personName === '') {
-            continue;
-          }
-          $context['results']['current_node']['contributor'] = $personName;
-          $context['results']['current_node']['contributor_type'] = $type;
-          $list = [];
-          if (method_exists($lookup, 'getIsbnsByAuthor')) {
-            $list = $debugEnabled
-              ? $lookup->getIsbnsByAuthor($personName, $debugInfo)
-              : $lookup->getIsbnsByAuthor($personName);
-          }
-          elseif (method_exists($lookup, 'getIsbnByAuthor')) {
-            $single = $debugEnabled
-              ? $lookup->getIsbnByAuthor($personName, $debugInfo)
-              : $lookup->getIsbnByAuthor($personName);
-            $list = $single ? [$single] : [];
-          }
-          foreach ((array) $list as $isbn) {
-            $normalized = \wlt_bookshop_normalize_isbn((string) $isbn);
-            if ($normalized) {
-              $found[$normalized] = TRUE;
-            }
-          }
+      $author_sets = [];
+      if (!empty($title_authors)) {
+        $author_sets[] = ['type' => 'title', 'names' => $title_authors];
+      }
+      if (!empty($authors)) {
+        $author_sets[] = ['type' => 'author', 'names' => $authors];
+      }
+
+      foreach ($author_sets as $set) {
+        if (empty($set['names'])) {
+          continue;
         }
+        $first = reset($set['names']);
+        $context['results']['current_node']['contributor'] = $first ?: '';
+        $context['results']['current_node']['contributor_type'] = $set['type'];
+        $added = \wlt_bookshop_collect_isbns_for_names($lookup, $set['names'], $found, PHP_INT_MAX, $debugInfo);
+        if ($added) {
+          break;
+        }
+      }
+
+      if (!empty($translators)) {
+        if ($context['results']['current_node']['contributor'] === '') {
+          $context['results']['current_node']['contributor'] = reset($translators) ?: '';
+          $context['results']['current_node']['contributor_type'] = 'translator';
+        }
+        \wlt_bookshop_collect_isbns_for_names($lookup, $translators, $found, PHP_INT_MAX, $debugInfo);
       }
 
       $items = NULL;
@@ -466,7 +469,7 @@ class BookIsbnProcessForm extends FormBase {
             }
           }
         }
-        $debugCombined .= static::formatDebugSummary($node->id(), $title, $authors, $translators, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
+        $debugCombined .= static::formatDebugSummary($node->id(), $title, $title_authors, $authors, $translators, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
       }
     }
   }
@@ -503,20 +506,21 @@ class BookIsbnProcessForm extends FormBase {
       $isbn_field = $settings['isbn_field'] ?? 'field_isbn';
       $author_field = $settings['author_field'] ?? 'field_author';
       $translator_field = $settings['translator_field'] ?? '';
+      $title_field = $settings['title_field'] ?? '';
       $query = \Drupal::entityQuery('node')
         ->accessCheck(FALSE)
         ->condition('type', $bundle)
         ->notExists($isbn_field)
         ->sort('changed', 'DESC');
+      $group = $query->orConditionGroup()
+        ->exists($author_field);
       if ($translator_field !== '') {
-        $group = $query->orConditionGroup()
-          ->exists($author_field)
-          ->exists($translator_field);
-        $query->condition($group);
+        $group->exists($translator_field);
       }
-      else {
-        $query->exists($author_field);
+      if ($title_field !== '') {
+        $group->exists($title_field);
       }
+      $query->condition($group);
       $kill_field = $settings['kill_switch_field'] ?? '';
       if ($limit !== NULL) {
         if ($remaining <= 0) {
@@ -525,10 +529,11 @@ class BookIsbnProcessForm extends FormBase {
         $query->range(0, max(0, $remaining));
       }
       if ($debug) {
-        \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle query: requires contributors (author: @author, translator: @translator), ISBN field @isbn empty, kill switch @kill != 1.', [
+        \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle query: requires contributors (author: @author, translator: @translator, title: @title), ISBN field @isbn empty, kill switch @kill != 1.', [
           '@bundle' => $bundle,
           '@author' => $author_field,
           '@translator' => $translator_field ?: '(none)',
+          '@title' => $title_field ?: '(none)',
           '@isbn' => $isbn_field,
           '@kill' => $kill_field ?: '(none)',
         ]);
@@ -603,9 +608,11 @@ class BookIsbnProcessForm extends FormBase {
       }
       if (empty($ids)) {
         if ($debug) {
-          \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes found for bundle @bundle (author field: @author, ISBN field: @isbn, kill switch: @kill).', [
+          \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes found for bundle @bundle (author field: @author, translator field: @translator, title field: @title_field, ISBN field: @isbn, kill switch: @kill).', [
             '@bundle' => $bundle,
             '@author' => $author_field,
+            '@translator' => $translator_field ?: '(none)',
+            '@title_field' => $title_field ?: '(none)',
             '@isbn' => $isbn_field,
             '@kill' => $kill_field ?: '(none)',
           ]);
@@ -616,11 +623,12 @@ class BookIsbnProcessForm extends FormBase {
         $all[(int) $id] = TRUE;
       }
       if ($debug) {
-        \Drupal::logger('wlt_bookshop_batch')->notice('Collected @count candidate nodes for bundle @bundle (author field: @author, translator field: @translator, ISBN field: @isbn).', [
+        \Drupal::logger('wlt_bookshop_batch')->notice('Collected @count candidate nodes for bundle @bundle (author field: @author, translator field: @translator, title field: @title_field, ISBN field: @isbn).', [
           '@count' => count($ids),
           '@bundle' => $bundle,
           '@author' => $author_field,
           '@translator' => $translator_field ?: '(none)',
+          '@title_field' => $title_field ?: '(none)',
           '@isbn' => $isbn_field,
         ]);
         $subset = array_slice($ids, 0, min(5, count($ids)));
@@ -650,6 +658,18 @@ class BookIsbnProcessForm extends FormBase {
                 }
               }
             }
+            $title_value = '';
+            if ($title_field !== '' && $candidate->hasField($title_field) && !$candidate->get($title_field)->isEmpty()) {
+              $title_items = $candidate->get($title_field)->getValue();
+              foreach ($title_items as $title_item) {
+                if (!empty($title_item['value'])) {
+                  $title_value = \wlt_bookshop_sanitize_text((string) $title_item['value']);
+                  if ($title_value !== '') {
+                    break;
+                  }
+                }
+              }
+            }
             $isbn_values = [];
             if ($candidate->hasField($isbn_field)) {
               foreach ($candidate->get($isbn_field) as $item) {
@@ -662,10 +682,11 @@ class BookIsbnProcessForm extends FormBase {
             if ($kill_field !== '' && $candidate->hasField($kill_field)) {
               $kill_value = $candidate->get($kill_field)->value;
             }
-            \Drupal::logger('wlt_bookshop_batch')->notice('Candidate nid @nid diagnostics: author values=[@authors], translator values=[@translators], isbn values=[@isbns], kill switch=@kill', [
+            \Drupal::logger('wlt_bookshop_batch')->notice('Candidate nid @nid diagnostics: author values=[@authors], translator values=[@translators], title value=@title_val, isbn values=[@isbns], kill switch=@kill', [
               '@nid' => $candidate->id(),
               '@authors' => $author_values ? implode('; ', $author_values) : '(empty)',
               '@translators' => $translator_values ? implode('; ', $translator_values) : '(empty)',
+              '@title_val' => $title_value === '' ? '(empty)' : $title_value,
               '@isbns' => $isbn_values ? implode('; ', $isbn_values) : '(empty)',
               '@kill' => $kill_value === NULL ? '(none)' : $kill_value,
             ]);
@@ -709,6 +730,13 @@ class BookIsbnProcessForm extends FormBase {
   }
 
   /**
+   * Extract title-derived author names based on bundle configuration.
+   */
+  protected static function getTitleAuthors(NodeInterface $node): array {
+    return \wlt_bookshop_extract_title_authors($node);
+  }
+
+  /**
    * Extract author name strings based on bundle configuration.
    */
   protected static function getAuthorNames(NodeInterface $node): array {
@@ -727,6 +755,10 @@ class BookIsbnProcessForm extends FormBase {
    * Prefers custom field `field_sidebartitle`, falls back to node label().
    */
   protected static function getSearchTitle(NodeInterface $node): string {
+    $configured = \wlt_bookshop_get_configured_title_text($node);
+    if ($configured !== '') {
+      return $configured;
+    }
     if ($node->hasField('field_sidebartitle')) {
       $val = static::sanitizeText((string) $node->get('field_sidebartitle')->value);
       if ($val !== '') {
@@ -801,10 +833,11 @@ class BookIsbnProcessForm extends FormBase {
   /**
    * Format debug details into a readable text block.
    */
-  protected static function formatDebugSummary(int $nid, string $title, array $authors, array $translators, array $debugInfo, array $savedIsbns): string {
+  protected static function formatDebugSummary(int $nid, string $title, array $titleAuthors, array $authors, array $translators, array $debugInfo, array $savedIsbns): string {
     $lines = [];
     $lines[] = 'Node NID: ' . $nid;
     $lines[] = 'Title: ' . $title;
+    $lines[] = 'Title authors: ' . (empty($titleAuthors) ? '-' : implode(', ', $titleAuthors));
     $lines[] = 'Authors: ' . (empty($authors) ? '-' : implode(', ', $authors));
     $lines[] = 'Translators: ' . (empty($translators) ? '-' : implode(', ', $translators));
     // Show the exact keywords used for Bookshop search when available.
@@ -815,6 +848,7 @@ class BookIsbnProcessForm extends FormBase {
     else {
       $kwParts = [];
       if ($title !== '') { $kwParts[] = $title; }
+      if (!empty($titleAuthors)) { $kwParts[] = implode(' ', $titleAuthors); }
       if (!empty($authors)) { $kwParts[] = implode(' ', $authors); }
       if (!empty($translators)) { $kwParts[] = implode(' ', $translators); }
       $keywords = implode(' ', $kwParts);
