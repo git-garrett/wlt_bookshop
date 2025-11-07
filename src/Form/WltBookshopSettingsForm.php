@@ -163,6 +163,22 @@ class WltBookshopSettingsForm extends ConfigFormBase {
         '#required' => FALSE,
         '#description' => $this->t('Optional field whose values will also be linkified inside node content.'),
       ];
+      $form['bundle_' . $bundle_id]['translator_field'] = [
+        '#type' => 'select',
+        '#title' => $this->t('Translator field'),
+        '#options' => ['' => $this->t('- None -')] + $field_options,
+        '#default_value' => $settings['translator_field'] ?? '',
+        '#required' => FALSE,
+        '#description' => $this->t('Optional field providing translator information used by Bookshop integrations.'),
+      ];
+      $form['bundle_' . $bundle_id]['title_field'] = [
+        '#type' => 'select',
+        '#title' => $this->t('Title field'),
+        '#options' => ['' => $this->t('- None -')] + $field_options,
+        '#default_value' => $settings['title_field'] ?? '',
+        '#required' => FALSE,
+        '#description' => $this->t('Optional field providing title information when lookups need a custom field instead of the base title.'),
+      ];
       $form['bundle_' . $bundle_id]['kill_switch_field'] = [
         '#type' => 'select',
         '#title' => $this->t('Kill switch field'),
@@ -205,16 +221,20 @@ class WltBookshopSettingsForm extends ConfigFormBase {
       $author = (string) $form_state->getValue(['bundle_' . $bundle_id, 'author_field']);
       $isbn = (string) $form_state->getValue(['bundle_' . $bundle_id, 'isbn_field']);
       $editor = (string) $form_state->getValue(['bundle_' . $bundle_id, 'editor_field']);
+      $translator = (string) $form_state->getValue(['bundle_' . $bundle_id, 'translator_field']);
+      $title = (string) $form_state->getValue(['bundle_' . $bundle_id, 'title_field']);
       $kill = (string) $form_state->getValue(['bundle_' . $bundle_id, 'kill_switch_field']);
 
       $options = $field_options_cache[$bundle_id] ?? [];
 
       if ($debug_logging) {
-        \Drupal::logger('wlt_bookshop_settings')->notice('Validating bundle @bundle: author=@a isbn=@i editor=@e kill=@k options=[@options]', [
+        \Drupal::logger('wlt_bookshop_settings')->notice('Validating bundle @bundle: author=@a isbn=@i editor=@e translator=@t title_field=@tf kill=@k options=[@options]', [
           '@bundle' => $bundle_id,
           '@a' => $author,
           '@i' => $isbn,
           '@e' => $editor,
+          '@t' => $translator,
+          '@tf' => $title,
           '@k' => $kill,
           '@options' => implode(', ', array_keys($options)),
         ]);
@@ -232,6 +252,12 @@ class WltBookshopSettingsForm extends ConfigFormBase {
       }
       if ($editor !== '' && !isset($options[$editor])) {
         $form_state->setErrorByName('bundle_' . $bundle_id . '][editor_field', $this->t('The selected editor field is not available on the @bundle bundle.', ['@bundle' => $bundle_id]));
+      }
+      if ($translator !== '' && !isset($options[$translator])) {
+        $form_state->setErrorByName('bundle_' . $bundle_id . '][translator_field', $this->t('The selected translator field is not available on the @bundle bundle.', ['@bundle' => $bundle_id]));
+      }
+      if ($title !== '' && !isset($options[$title])) {
+        $form_state->setErrorByName('bundle_' . $bundle_id . '][title_field', $this->t('The selected title field is not available on the @bundle bundle.', ['@bundle' => $bundle_id]));
       }
       if ($kill !== '' && !isset($options[$kill])) {
         $form_state->setErrorByName('bundle_' . $bundle_id . '][kill_switch_field', $this->t('The selected kill switch field is not available on the @bundle bundle.', ['@bundle' => $bundle_id]));
@@ -251,6 +277,8 @@ class WltBookshopSettingsForm extends ConfigFormBase {
         'author_field' => $form_state->getValue(['bundle_' . $bundle_id, 'author_field']) ?: '',
         'isbn_field' => $form_state->getValue(['bundle_' . $bundle_id, 'isbn_field']) ?: '',
         'editor_field' => $form_state->getValue(['bundle_' . $bundle_id, 'editor_field']) ?: '',
+        'translator_field' => $form_state->getValue(['bundle_' . $bundle_id, 'translator_field']) ?: '',
+        'title_field' => $form_state->getValue(['bundle_' . $bundle_id, 'title_field']) ?: '',
         'kill_switch_field' => $form_state->getValue(['bundle_' . $bundle_id, 'kill_switch_field']) ?: '',
         'bypass_uid_check' => (bool) $form_state->getValue(['bundle_' . $bundle_id, 'bypass_uid_check']),
       ];

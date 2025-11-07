@@ -3,6 +3,8 @@ bundle_settings:
     author_field: field_author
     isbn_field: field_isbn
     editor_field: field_editor
+    translator_field: ''
+    title_field: ''
     kill_switch_field: field_isbn_kill_switch
     bypass_uid_check: false
 debug_logging: false

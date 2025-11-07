@@ -19,6 +19,12 @@ wlt_bookshop.settings:
             editor_field:
               type: string
               label: 'Editor field'
+            translator_field:
+              type: string
+              label: 'Translator field'
+            title_field:
+              type: string
+              label: 'Title field'
             kill_switch_field:
               type: string
               label: 'Kill switch field'
