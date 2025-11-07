@@ -244,7 +244,16 @@ class BookIsbnProcessForm extends FormBase {
     ];
     $debugCombined = '';
 
+    if (!isset($context['results']['started'])) {
+      $context['results']['started'] = microtime(TRUE);
+    }
+    $statsBefore = $lookup->getApiStats();
+
     static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined);
+
+    $statsAfter = $lookup->getApiStats();
+    $batchApiStats = static::diffApiStats($statsAfter, $statsBefore);
+    $context['results']['api_totals'] = static::accumulateApiStats($context['results']['api_totals'] ?? [], $batchApiStats);
 
     $context['results']['checked'] = ($context['results']['checked'] ?? 0) + $stats['checked'];
     $context['results']['updated'] = ($context['results']['updated'] ?? 0) + $stats['updated'];
@@ -253,8 +262,12 @@ class BookIsbnProcessForm extends FormBase {
       $context['results']['debug'][] = $debugCombined;
     }
 
-    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far.', [
+    $elapsed = microtime(TRUE) - $context['results']['started'];
+    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far (elapsed @seconds s). Batch API calls: @batch. Total API calls: @total.', [
       '@count' => $context['results']['checked'],
+      '@seconds' => number_format($elapsed, 2),
+      '@batch' => static::formatApiStats($batchApiStats),
+      '@total' => static::formatApiStats($context['results']['api_totals']),
     ]);
   }
 
@@ -684,6 +697,56 @@ class BookIsbnProcessForm extends FormBase {
     $text = strip_tags($text);
     $text = trim(preg_replace('/\s+/u', ' ', $text));
     return $text;
+  }
+
+  /**
+   * Normalize API statistics to the known category set.
+   */
+  protected static function normalizeApiStats(array $stats): array {
+    $normalized = [];
+    foreach (BookIsbnLookup::API_STAT_KEYS as $key) {
+      $normalized[$key] = (int) ($stats[$key] ?? 0);
+    }
+    return $normalized;
+  }
+
+  /**
+   * Calculate delta between two API stat snapshots.
+   */
+  protected static function diffApiStats(array $after, array $before): array {
+    $after = static::normalizeApiStats($after);
+    $before = static::normalizeApiStats($before);
+    $diff = [];
+    foreach (BookIsbnLookup::API_STAT_KEYS as $key) {
+      $delta = $after[$key] - $before[$key];
+      $diff[$key] = $delta > 0 ? $delta : 0;
+    }
+    return $diff;
+  }
+
+  /**
+   * Accumulate API statistics across batches.
+   */
+  protected static function accumulateApiStats(array $base, array $delta): array {
+    $base = static::normalizeApiStats($base);
+    $delta = static::normalizeApiStats($delta);
+    $combined = [];
+    foreach (BookIsbnLookup::API_STAT_KEYS as $key) {
+      $combined[$key] = $base[$key] + $delta[$key];
+    }
+    return $combined;
+  }
+
+  /**
+   * Format API statistics for human consumption.
+   */
+  protected static function formatApiStats(array $stats): string {
+    $stats = static::normalizeApiStats($stats);
+    $parts = [];
+    foreach (BookIsbnLookup::API_STAT_KEYS as $key) {
+      $parts[] = $key . ': ' . $stats[$key];
+    }
+    return implode(', ', $parts);
   }
 
   /**

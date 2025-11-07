@@ -14,6 +14,8 @@ use Psr\Log\LoggerInterface;
  * Service to look up ISBNs using the Open Library API.
  */
 class BookIsbnLookup {
+  public const API_STAT_KEYS = ['search', 'edition', 'work'];
+
   private const OPEN_LIBRARY_USER_AGENT = 'WorldLiteratureToday (staff@evenvision.com)';
   private const OPEN_LIBRARY_RATE_LIMIT = 2;
 
@@ -58,9 +60,28 @@ class BookIsbnLookup {
    */
   protected int $openLibraryWindowCount = 0;
 
+  /**
+   * Tracks counts of Open Library API calls per category.
+   *
+   * @var array<string,int>
+   */
+  protected array $apiStats = [
+    'search' => 0,
+    'edition' => 0,
+    'work' => 0,
+    'other' => 0,
+  ];
+
   public function __construct(ClientInterface $http_client, LoggerInterface $logger) {
     $this->httpClient = $http_client;
     $this->logger = $logger;
+  }
+
+  /**
+   * Retrieve current API call statistics.
+   */
+  public function getApiStats(): array {
+    return $this->apiStats;
   }
 
   /**
@@ -72,6 +93,16 @@ class BookIsbnLookup {
     $headers['User-Agent'] = self::OPEN_LIBRARY_USER_AGENT;
     $options['headers'] = $headers;
     return $options;
+  }
+
+  /**
+   * Increment the API statistics bucket for the given category.
+   */
+  protected function incrementApiStat(string $category): void {
+    if (!isset($this->apiStats[$category])) {
+      $category = 'other';
+    }
+    $this->apiStats[$category]++;
   }
 
   /**
@@ -116,9 +147,10 @@ class BookIsbnLookup {
    * @throws \Drupal\wlt_bookshop\Exception\OpenLibraryApiException
    *   When Open Library signals access should be halted.
    */
-  protected function sendOpenLibraryGet(string $url, array $options, string $context): ResponseInterface {
+  protected function sendOpenLibraryGet(string $url, array $options, string $context, string $category = 'other'): ResponseInterface {
     $options = $this->prepareOpenLibraryOptions($options);
     $this->throttleOpenLibraryRequests();
+    $this->incrementApiStat($category);
     $response = $this->httpClient->request('GET', $url, $options);
     $this->guardOpenLibraryResponse($url, $response, $context);
     return $response;
@@ -127,9 +159,10 @@ class BookIsbnLookup {
   /**
    * Queue a throttled Open Library GET request asynchronously.
    */
-  protected function sendOpenLibraryGetAsync(string $url, array $options, string $context): PromiseInterface {
+  protected function sendOpenLibraryGetAsync(string $url, array $options, string $context, string $category = 'other'): PromiseInterface {
     $options = $this->prepareOpenLibraryOptions($options);
     $this->throttleOpenLibraryRequests();
+    $this->incrementApiStat($category);
     return $this->httpClient->requestAsync('GET', $url, $options)
       ->then(function (ResponseInterface $response) use ($url, $context) {
         $this->guardOpenLibraryResponse($url, $response, $context);
@@ -164,7 +197,7 @@ class BookIsbnLookup {
         'query' => $query,
         'timeout' => 5,
         'connect_timeout' => 3,
-      ], 'title search');
+      ], 'title search', 'search');
     }
     catch (OpenLibraryApiException $e) {
       throw $e;
@@ -229,7 +262,7 @@ class BookIsbnLookup {
         'query' => $query,
         'timeout' => 5,
         'connect_timeout' => 3,
-      ], 'author search');
+      ], 'author search', 'search');
     }
     catch (OpenLibraryApiException $e) {
       throw $e;
@@ -399,7 +432,7 @@ class BookIsbnLookup {
         'query' => $query,
         'timeout' => 8,
         'connect_timeout' => 4,
-      ], 'author search (aggregate)');
+      ], 'author search (aggregate)', 'search');
     }
     catch (OpenLibraryApiException $e) {
       throw $e;
@@ -582,7 +615,7 @@ class BookIsbnLookup {
         $promises[$editionKey] = $this->sendOpenLibraryGetAsync($urls[$editionKey], [
           'timeout' => 8,
           'connect_timeout' => 4,
-        ], 'edition lookup');
+        ], 'edition lookup', 'edition');
       }
 
       $settled = Utils::settle($promises)->wait();
@@ -729,7 +762,7 @@ class BookIsbnLookup {
         $response = $this->sendOpenLibraryGet($url, [
           'timeout' => 10,
           'connect_timeout' => 4,
-        ], 'work editions');
+        ], 'work editions', 'work');
       }
       catch (OpenLibraryApiException $e) {
         throw $e;
