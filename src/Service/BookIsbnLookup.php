@@ -125,7 +125,17 @@ class BookIsbnLookup {
     if (!$this->verboseLogging) {
       return;
     }
-    $this->logger->notice('[Open Library] ' . $message, $context);
+    if (PHP_SAPI === 'cli') {
+      $formatted = '[Open Library] ' . $message;
+      if (!empty($context)) {
+        $formatted .= ' ' . json_encode($context);
+      }
+      // phpcs:ignore DrupalPractice.General.AccessGlobals.Sysprint
+      print $formatted . PHP_EOL;
+    }
+    else {
+      $this->logger->notice('[Open Library] ' . $message, $context);
+    }
   }
 
   /**
