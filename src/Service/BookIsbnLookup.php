@@ -15,7 +15,7 @@ use Psr\Log\LoggerInterface;
  */
 class BookIsbnLookup {
   private const OPEN_LIBRARY_USER_AGENT = 'WorldLiteratureToday (staff@evenvision.com)';
-  private const OPEN_LIBRARY_RATE_LIMIT = 12;
+  private const OPEN_LIBRARY_RATE_LIMIT = 6;
 
   /** @var \GuzzleHttp\ClientInterface */
   protected $httpClient;
