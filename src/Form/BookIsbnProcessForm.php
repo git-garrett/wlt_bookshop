@@ -249,7 +249,7 @@ class BookIsbnProcessForm extends FormBase {
     }
     $statsBefore = $lookup->getApiStats();
 
-    static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined);
+    static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context);
 
     $statsAfter = $lookup->getApiStats();
     $batchApiStats = static::diffApiStats($statsAfter, $statsBefore);
@@ -263,11 +263,24 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $elapsed = microtime(TRUE) - $context['results']['started'];
-    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far (elapsed @seconds s). Batch API calls: @batch. Total API calls: @total.', [
+    $currentNode = $context['results']['current_node'] ?? NULL;
+    $nodeString = '';
+    if ($currentNode) {
+      $nodeString = \Drupal::translation()->translate(' Current node: NID @nid (@title).', [
+        '@nid' => $currentNode['nid'],
+        '@title' => $currentNode['title'] ?: '(untitled)',
+      ]);
+      if (!empty($currentNode['author'])) {
+        $nodeString .= \Drupal::translation()->translate(' Author: @author.', ['@author' => $currentNode['author']]);
+      }
+    }
+
+    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far (elapsed @seconds s). Batch API calls: @batch. Total API calls: @total.@node', [
       '@count' => $context['results']['checked'],
       '@seconds' => number_format($elapsed, 2),
       '@batch' => static::formatApiStats($batchApiStats),
       '@total' => static::formatApiStats($context['results']['api_totals']),
+      '@node' => $nodeString,
     ]);
   }
 
@@ -326,8 +339,10 @@ class BookIsbnProcessForm extends FormBase {
    *   Mutable array storing 'checked' and 'updated' counters.
    * @param string $debugCombined
    *   Aggregated debug output string.
+   * @param array $context
+   *   Batch context array reference for logging/progress.
    */
-  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined): void {
+  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context): void {
     foreach ($nodes as $node) {
       $stats['checked']++;
       if (!$node instanceof NodeInterface) {
@@ -351,18 +366,20 @@ class BookIsbnProcessForm extends FormBase {
         continue;
       }
 
+      $context['results']['current_node'] = [
+        'nid' => (int) $node->id(),
+        'title' => $title,
+        'author' => '',
+      ];
+
       $found = [];
       $debugInfo = $debugEnabled ? [] : NULL;
-      $thisBatchLogger = function (string $message, array $context = []) use ($logger, $node) {
-        $logger->notice('[NID @nid] ' . $message, ['@nid' => $node->id()] + $context);
-      };
-      $thisBatchLogger('Starting ISBN lookup', ['title' => $title]);
       foreach ($authors as $authorName) {
         if ($authorName === '') {
           continue;
         }
         $list = [];
-        $thisBatchLogger('Searching author "@author".', ['@author' => $authorName]);
+        $context['results']['current_node']['author'] = $authorName;
         if (method_exists($lookup, 'getIsbnsByAuthor')) {
           $list = $debugEnabled
             ? $lookup->getIsbnsByAuthor($authorName, $debugInfo)
@@ -374,7 +391,6 @@ class BookIsbnProcessForm extends FormBase {
             : $lookup->getIsbnByAuthor($authorName);
           $list = $single ? [$single] : [];
         }
-        $thisBatchLogger('Author "@author" returned @count ISBN candidates.', ['@author' => $authorName, '@count' => count((array) $list)]);
         foreach ((array) $list as $isbn) {
           $normalized = \wlt_bookshop_normalize_isbn((string) $isbn);
           if ($normalized) {
@@ -404,7 +420,6 @@ class BookIsbnProcessForm extends FormBase {
         foreach (array_keys($existing) as $isbn) {
           $items[] = ['value' => $isbn];
         }
-        $thisBatchLogger('Saving @count ISBN(s) to field @field.', ['@field' => $isbn_field, '@count' => count($items)]);
         try {
           $node->set($isbn_field, $items);
           $node->save();
@@ -792,7 +807,7 @@ class BookIsbnProcessForm extends FormBase {
         $lines[] = 'Search error: ' . $s['error'];
       }
     }
-    if (!empty($debugInfo['bookshop'])) {
+      if (!empty($debugInfo['bookshop'])) {
       $b = $debugInfo['bookshop'];
       $lines[] = 'Bookshop URL: ' . ($b['url'] ?? '');
       if (!empty($b['query'])) {
