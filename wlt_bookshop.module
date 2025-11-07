@@ -56,34 +56,45 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   }
 
   $authors = wlt_bookshop_collect_author_names($entity);
-  if (empty($authors)) {
+  $translators = wlt_bookshop_collect_translator_names($entity);
+  if (empty($authors) && empty($translators)) {
     return;
   }
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
   $collected = [];
-  foreach ($authors as $author) {
-    $isbns = [];
-    if (method_exists($lookup, 'getIsbnsByAuthor')) {
-      $isbns = $lookup->getIsbnsByAuthor($author);
-    }
-    elseif (method_exists($lookup, 'getIsbnByAuthor')) {
-      $single = $lookup->getIsbnByAuthor($author);
-      $isbns = $single ? [$single] : [];
-    }
+  $limitReached = FALSE;
+  foreach (['author' => $authors, 'translator' => $translators] as $names) {
+    foreach ($names as $name) {
+      $isbns = [];
+      if (method_exists($lookup, 'getIsbnsByAuthor')) {
+        $isbns = $lookup->getIsbnsByAuthor($name);
+      }
+      elseif (method_exists($lookup, 'getIsbnByAuthor')) {
+        $single = $lookup->getIsbnByAuthor($name);
+        $isbns = $single ? [$single] : [];
+      }
 
-    foreach ($isbns as $isbn) {
-      $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
-      if (!$normalized) {
-        continue;
+      foreach ($isbns as $isbn) {
+        $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
+        if (!$normalized) {
+          continue;
+        }
+        if (!isset($collected[$normalized])) {
+          $collected[$normalized] = TRUE;
+        }
+        if (count($collected) >= 12) {
+          $limitReached = TRUE;
+          break;
+        }
       }
-      if (!isset($collected[$normalized])) {
-        $collected[$normalized] = TRUE;
+      if ($limitReached) {
+        break;
       }
-      if (count($collected) >= 12) {
-        break 2;
-      }
+    }
+    if ($limitReached) {
+      break;
     }
   }
 
@@ -113,29 +124,35 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
     return NULL;
   }
   $authors = wlt_bookshop_collect_author_names($node);
-  if (empty($authors)) {
+  $translators = wlt_bookshop_collect_translator_names($node);
+  if (empty($authors) && empty($translators)) {
     return NULL;
   }
 
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
   $collected = [];
-  foreach ($authors as $author) {
-    if ($author === '') {
+  foreach (['author' => $authors, 'translator' => $translators] as $names) {
+    if (empty($names)) {
       continue;
     }
-    $list = [];
-    if (method_exists($lookup, 'getIsbnsByAuthor')) {
-      $list = $lookup->getIsbnsByAuthor($author);
-    }
-    elseif (method_exists($lookup, 'getIsbnByAuthor')) {
-      $single = $lookup->getIsbnByAuthor($author);
-      $list = $single ? [$single] : [];
-    }
-    foreach ((array) $list as $isbn) {
-      $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
-      if ($normalized) {
-        $collected[$normalized] = TRUE;
+    foreach ($names as $name) {
+      if ($name === '') {
+        continue;
+      }
+      $list = [];
+      if (method_exists($lookup, 'getIsbnsByAuthor')) {
+        $list = $lookup->getIsbnsByAuthor($name);
+      }
+      elseif (method_exists($lookup, 'getIsbnByAuthor')) {
+        $single = $lookup->getIsbnByAuthor($name);
+        $list = $single ? [$single] : [];
+      }
+      foreach ((array) $list as $isbn) {
+        $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
+        if ($normalized) {
+          $collected[$normalized] = TRUE;
+        }
       }
     }
     if (!empty($collected)) {
@@ -150,17 +167,18 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
 }
 
 /**
- * Collect distinct author names from a configured author field.
+ * Collect distinct contributor names from a configurable field.
  *
  * @param \Drupal\node\NodeInterface $node
- *   A loaded node entity.
+ *   Node to inspect.
+ * @param string|null $field
+ *   Field machine name when available.
  *
  * @return string[]
- *   Array of unique author strings.
+ *   Unique sanitized strings derived from the field.
  */
-function wlt_bookshop_collect_author_names(NodeInterface $node): array {
-  $field = wlt_bookshop_get_bundle_field($node->bundle(), 'author_field') ?? 'field_author';
-  if (!$node->hasField($field) || $node->get($field)->isEmpty()) {
+function wlt_bookshop_collect_names_from_field(NodeInterface $node, ?string $field): array {
+  if (!$field || !$node->hasField($field) || $node->get($field)->isEmpty()) {
     return [];
   }
   $names = [];
@@ -180,6 +198,34 @@ function wlt_bookshop_collect_author_names(NodeInterface $node): array {
     }
   }
   return array_keys($names);
+}
+
+/**
+ * Collect distinct author names from a configured author field.
+ *
+ * @param \Drupal\node\NodeInterface $node
+ *   A loaded node entity.
+ *
+ * @return string[]
+ *   Array of unique author strings.
+ */
+function wlt_bookshop_collect_author_names(NodeInterface $node): array {
+  $field = wlt_bookshop_get_bundle_field($node->bundle(), 'author_field') ?? 'field_author';
+  return wlt_bookshop_collect_names_from_field($node, $field);
+}
+
+/**
+ * Collect distinct translator names from the configured translator field.
+ *
+ * @param \Drupal\node\NodeInterface $node
+ *   A loaded node entity.
+ *
+ * @return string[]
+ *   Array of unique translator strings.
+ */
+function wlt_bookshop_collect_translator_names(NodeInterface $node): array {
+  $field = wlt_bookshop_get_bundle_field($node->bundle(), 'translator_field');
+  return wlt_bookshop_collect_names_from_field($node, $field);
 }
 
 /**
