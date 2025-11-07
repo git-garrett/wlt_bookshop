@@ -36,6 +36,7 @@ class WltBookshopCommands extends DrushCommands {
    * @option process-all When set, walks every eligible node in batches (default FALSE).
    * @option batch-size Size of each chunk when processing multiple nodes (default 100).
    * @option debug Collect and display per-node debug output (default FALSE).
+   * @option api-verbose Output verbose Open Library request/response logging (default FALSE).
    */
   public function processIsbn(array $options = [
     'nid' => NULL,
@@ -43,12 +44,14 @@ class WltBookshopCommands extends DrushCommands {
     'process-all' => FALSE,
     'batch-size' => 100,
     'debug' => FALSE,
+    'api-verbose' => FALSE,
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
     $processAll = !empty($options['process-all']);
     $batchSize = max(1, min(500, (int) ($options['batch-size'] ?? 100)));
     $debug = !empty($options['debug']);
+    $apiVerbose = !empty($options['api-verbose']);
 
     $values = [
       'nid' => $nid > 0 ? $nid : '',
@@ -56,6 +59,7 @@ class WltBookshopCommands extends DrushCommands {
       'process_all' => $processAll,
       'batch_size' => $batchSize,
       'debug' => $debug,
+      'api_verbose' => $apiVerbose,
     ];
 
     /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */

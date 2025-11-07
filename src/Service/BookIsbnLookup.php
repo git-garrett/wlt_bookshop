@@ -52,6 +52,11 @@ class BookIsbnLookup {
   protected array $workEditionsCache = [];
 
   /**
+   * Whether verbose logging of API requests is enabled.
+   */
+  protected bool $verboseLogging = FALSE;
+
+  /**
    * Start of the current Open Library rate limit window (microtime, seconds).
    */
   protected float $openLibraryWindowStart = 0.0;
@@ -76,6 +81,13 @@ class BookIsbnLookup {
   public function __construct(ClientInterface $http_client, LoggerInterface $logger) {
     $this->httpClient = $http_client;
     $this->logger = $logger;
+  }
+
+  /**
+   * Toggle verbose API logging.
+   */
+  public function setVerboseLogging(bool $enabled): void {
+    $this->verboseLogging = $enabled;
   }
 
   /**
@@ -104,6 +116,27 @@ class BookIsbnLookup {
       $category = 'other';
     }
     $this->apiStats[$category]++;
+  }
+
+  /**
+   * Log a verbose message when enabled.
+   */
+  protected function logVerbose(string $message, array $context = []): void {
+    if (!$this->verboseLogging) {
+      return;
+    }
+    $this->logger->notice('[Open Library] ' . $message, $context);
+  }
+
+  /**
+   * Summarize a response body for verbose logging.
+   */
+  protected function summarizeBody(ResponseInterface $response, int $limit = 500): string {
+    $body = (string) $response->getBody();
+    if (strlen($body) > $limit) {
+      $body = substr($body, 0, $limit) . '…';
+    }
+    return $body;
   }
 
   /**
@@ -153,8 +186,14 @@ class BookIsbnLookup {
     $options = $this->prepareOpenLibraryOptions($options);
     $this->throttleOpenLibraryRequests();
     $this->incrementApiStat($category);
+    $this->logVerbose(sprintf('Request [%s] %s %s', $category, $context, $url), [
+      'query' => $options['query'] ?? [],
+    ]);
     $response = $this->httpClient->request('GET', $url, $options);
     $this->guardOpenLibraryResponse($url, $response, $context);
+    $this->logVerbose(sprintf('Response [%s] %s status=%d', $category, $url, $response->getStatusCode()), [
+      'body' => $this->summarizeBody($response),
+    ]);
     return $response;
   }
 
@@ -165,9 +204,15 @@ class BookIsbnLookup {
     $options = $this->prepareOpenLibraryOptions($options);
     $this->throttleOpenLibraryRequests();
     $this->incrementApiStat($category);
+    $this->logVerbose(sprintf('Async request [%s] %s %s', $category, $context, $url), [
+      'query' => $options['query'] ?? [],
+    ]);
     return $this->httpClient->requestAsync('GET', $url, $options)
-      ->then(function (ResponseInterface $response) use ($url, $context) {
+      ->then(function (ResponseInterface $response) use ($url, $context, $category) {
         $this->guardOpenLibraryResponse($url, $response, $context);
+        $this->logVerbose(sprintf('Async response [%s] %s status=%d', $category, $url, $response->getStatusCode()), [
+          'body' => $this->summarizeBody($response),
+        ]);
         return $response;
       });
   }

@@ -121,6 +121,7 @@ class BookIsbnProcessForm extends FormBase {
     $limit = max(1, min(500, $limit));
     $specific_nid = (int) $form_state->getValue('nid');
     $debugEnabled = (bool) $form_state->getValue('debug');
+    $apiVerbose = (bool) $form_state->getValue('api_verbose');
     $processAll = (bool) $form_state->getValue('process_all');
     $batchSize = (int) $form_state->getValue('batch_size');
     $batchSize = max(1, min(500, $batchSize ?: 100));
@@ -160,7 +161,7 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title/author to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose);
       return;
     }
 
@@ -172,7 +173,7 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose);
       return;
     }
 
@@ -184,7 +185,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose);
   }
 
   /**
@@ -194,13 +195,15 @@ class BookIsbnProcessForm extends FormBase {
    *   Nested arrays of node IDs to process per operation.
    * @param bool $debugEnabled
    *   Whether debug output should be collected.
+   * @param bool $apiVerbose
+   *   Whether verbose API logging is enabled.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled],
+        [$chunk, $debugEnabled, $apiVerbose],
       ];
     }
 
@@ -227,10 +230,12 @@ class BookIsbnProcessForm extends FormBase {
    *   Node IDs to process in this operation.
    * @param bool $debugEnabled
    *   TRUE when debug output should be aggregated.
+   * @param bool $apiVerbose
+   *   TRUE to log verbose API traffic.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -248,6 +253,10 @@ class BookIsbnProcessForm extends FormBase {
       $context['results']['started'] = microtime(TRUE);
     }
     $statsBefore = $lookup->getApiStats();
+
+    if (method_exists($lookup, 'setVerboseLogging')) {
+      $lookup->setVerboseLogging($apiVerbose);
+    }
 
     static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context);
 
