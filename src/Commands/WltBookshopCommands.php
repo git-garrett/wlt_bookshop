@@ -2,8 +2,8 @@
 
 namespace Drupal\wlt_bookshop\Commands;
 
-use Drupal\Core\Form\FormBuilderInterface;
 use Drupal\Core\Form\FormState;
+use Drupal\Core\DependencyInjection\ClassResolverInterface;
 use Drupal\wlt_bookshop\Form\BookIsbnProcessForm;
 use Drush\Commands\DrushCommands;
 
@@ -13,16 +13,16 @@ use Drush\Commands\DrushCommands;
 class WltBookshopCommands extends DrushCommands {
 
   /**
-   * Form builder service.
+   * Class resolver service.
    */
-  protected FormBuilderInterface $formBuilder;
+  protected ClassResolverInterface $classResolver;
 
   /**
    * Construct the command handler.
    */
-  public function __construct(FormBuilderInterface $form_builder) {
+  public function __construct(ClassResolverInterface $class_resolver) {
     parent::__construct();
-    $this->formBuilder = $form_builder;
+    $this->classResolver = $class_resolver;
   }
 
   /**
@@ -58,12 +58,27 @@ class WltBookshopCommands extends DrushCommands {
       'debug' => $debug,
     ];
 
+    /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */
+    $form_object = $this->classResolver->getInstanceFromDefinition(BookIsbnProcessForm::class);
     $form_state = (new FormState())
       ->setValues($values)
       ->setUserInput($values);
+    $form_state->setFormObject($form_object);
     $form_state->setSubmitted();
 
-    $this->formBuilder->submitForm(BookIsbnProcessForm::class, $form_state);
+    $form = ['#form_id' => $form_object->getFormId()];
+    $form = $form_object->buildForm($form, $form_state);
+    $form_state->setCompleteForm($form);
+    $form_object->validateForm($form, $form_state);
+
+    if ($form_state->hasAnyErrors()) {
+      foreach ($form_state->getErrors() as $error) {
+        $this->logger()->error($error);
+      }
+      throw new \RuntimeException('Validation failed; see log output.');
+    }
+
+    $form_object->submitForm($form, $form_state);
 
     $batch = &batch_get();
     if (empty($batch)) {

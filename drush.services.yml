@@ -2,6 +2,6 @@ services:
   wlt_bookshop.drush_commands:
     class: Drupal\wlt_bookshop\Commands\WltBookshopCommands
     arguments:
-      - '@form_builder'
+      - '@class_resolver'
     tags:
       - { name: drush.command }
