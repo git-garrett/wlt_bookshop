@@ -68,15 +68,16 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   $collected = [];
   $sequence = 0;
 
+  $debugPlaceholder = NULL;
   $addedFromTitle = FALSE;
   if (!empty($title_authors)) {
-    $addedFromTitle = wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $collected, $limit, 'title_author', NULL, $sequence);
+    $addedFromTitle = wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $collected, $limit, 'title_author', $debugPlaceholder, $sequence);
   }
   if (!$addedFromTitle && !empty($authors)) {
-    wlt_bookshop_collect_isbns_for_names($lookup, $authors, $collected, $limit, 'author', NULL, $sequence);
+    wlt_bookshop_collect_isbns_for_names($lookup, $authors, $collected, $limit, 'author', $debugPlaceholder, $sequence);
   }
   if (!empty($translators) && count($collected) < $limit) {
-    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, $limit, 'translator', NULL, $sequence);
+    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, $limit, 'translator', $debugPlaceholder, $sequence);
   }
 
   if (empty($collected)) {
@@ -121,15 +122,16 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
   $collected = [];
   $sequence = 0;
+  $debugPlaceholder = NULL;
   $addedFromTitle = FALSE;
   if (!empty($title_authors)) {
-    $addedFromTitle = wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $collected, 12, 'title_author', NULL, $sequence);
+    $addedFromTitle = wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $collected, 12, 'title_author', $debugPlaceholder, $sequence);
   }
   if (!$addedFromTitle && !empty($authors)) {
-    wlt_bookshop_collect_isbns_for_names($lookup, $authors, $collected, 12, 'author', NULL, $sequence);
+    wlt_bookshop_collect_isbns_for_names($lookup, $authors, $collected, 12, 'author', $debugPlaceholder, $sequence);
   }
   if (!empty($translators) && count($collected) < 12) {
-    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, 12, 'translator', NULL, $sequence);
+    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, 12, 'translator', $debugPlaceholder, $sequence);
   }
 
   if (empty($collected)) {
