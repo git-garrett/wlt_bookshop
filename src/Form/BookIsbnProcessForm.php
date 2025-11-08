@@ -260,6 +260,8 @@ class BookIsbnProcessForm extends FormBase {
     $stats = [
       'checked' => 0,
       'updated' => 0,
+      'isbn_added' => 0,
+      'sentinel' => 0,
     ];
     $debugCombined = '';
 
@@ -280,6 +282,8 @@ class BookIsbnProcessForm extends FormBase {
 
     $context['results']['checked'] = ($context['results']['checked'] ?? 0) + $stats['checked'];
     $context['results']['updated'] = ($context['results']['updated'] ?? 0) + $stats['updated'];
+    $context['results']['isbn_added'] = ($context['results']['isbn_added'] ?? 0) + $stats['isbn_added'];
+    $context['results']['sentinel'] = ($context['results']['sentinel'] ?? 0) + $stats['sentinel'];
     $context['results']['operations'] = ($context['results']['operations'] ?? 0) + 1;
     if ($debugEnabled && $debugCombined !== '') {
       $context['results']['debug'][] = $debugCombined;
@@ -325,18 +329,21 @@ class BookIsbnProcessForm extends FormBase {
 
     $checked = $results['checked'] ?? 0;
     $updated = $results['updated'] ?? 0;
+    $isbnAdded = $results['isbn_added'] ?? 0;
+    $sentinel = $results['sentinel'] ?? 0;
 
+    $messenger->addStatus(t('Processed @checked nodes. Updated @updated nodes, added @isbn ISBNs, marked @sentinel as having no ISBN.', [
+      '@checked' => $checked,
+      '@updated' => $updated,
+      '@isbn' => $isbnAdded,
+      '@sentinel' => $sentinel,
+    ]));
     if ($updated > 0) {
-      $messenger->addStatus(t('Updated ISBN on @count nodes (checked @checked).', [
+      $logger->notice('Manual process updated ISBN on @count nodes (total ISBNs added: @isbn, sentinel: @sentinel).', [
         '@count' => $updated,
-        '@checked' => $checked,
-      ]));
-      $logger->notice('Manual process updated ISBN on @count nodes.', ['@count' => $updated]);
-    }
-    else {
-      $messenger->addStatus(t('Processed @checked nodes, no updates were necessary.', [
-        '@checked' => $checked,
-      ]));
+        '@isbn' => $isbnAdded,
+        '@sentinel' => $sentinel,
+      ]);
     }
 
     if (!empty($results['debug'])) {
@@ -489,6 +496,7 @@ class BookIsbnProcessForm extends FormBase {
           $added_here = count($existingOrdered) - $before;
           if ($added_here > 0) {
             $stats['updated']++;
+            $stats['isbn_added'] += $added_here;
           }
         }
         catch (\Throwable $e) {
@@ -506,6 +514,7 @@ class BookIsbnProcessForm extends FormBase {
           try {
             $node->save();
             $stats['updated']++;
+            $stats['sentinel']++;
           }
           catch (\Throwable $e) {
             $logger->error('Failed saving sentinel ISBN to node @nid: @message', [
