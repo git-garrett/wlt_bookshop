@@ -457,7 +457,11 @@ class BookIsbnProcessForm extends FormBase {
         $existingOrdered = [];
         foreach ($existing_items as $item) {
           if (isset($item['value']) && $item['value'] !== '') {
-            $existingOrdered[] = (string) $item['value'];
+            $value = (string) $item['value'];
+            if ($value === WLT_BOOKSHOP_NO_ISBN_SENTINEL) {
+              continue;
+            }
+            $existingOrdered[] = $value;
           }
         }
         $existingLookup = array_fill_keys($existingOrdered, TRUE);
@@ -494,6 +498,21 @@ class BookIsbnProcessForm extends FormBase {
           ]);
           // Skip collecting debug for this node if save failed.
           $items = NULL;
+        }
+      }
+      else {
+        if ($replaceExisting || $node->get($isbn_field)->isEmpty()) {
+          \wlt_bookshop_store_no_isbn($node, $isbn_field);
+          try {
+            $node->save();
+            $stats['updated']++;
+          }
+          catch (\Throwable $e) {
+            $logger->error('Failed saving sentinel ISBN to node @nid: @message', [
+              '@nid' => $node->id(),
+              '@message' => $e->getMessage(),
+            ]);
+          }
         }
       }
 

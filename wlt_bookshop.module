@@ -9,6 +9,9 @@ use Drupal\Component\Utility\Html;
 if (!defined('WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID')) {
   define('WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID', '81678');
 }
+if (!defined('WLT_BOOKSHOP_NO_ISBN_SENTINEL')) {
+  define('WLT_BOOKSHOP_NO_ISBN_SENTINEL', '0000');
+}
 
 /**
  * Implements hook_help().
@@ -81,11 +84,13 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   }
 
   if (empty($collected)) {
+    wlt_bookshop_store_no_isbn($entity, $isbn_field);
     return;
   }
 
   $orderedIsbns = wlt_bookshop_rank_isbn_entries($entity, $collected);
   if (empty($orderedIsbns)) {
+    wlt_bookshop_store_no_isbn($entity, $isbn_field);
     return;
   }
   $orderedIsbns = array_slice($orderedIsbns, 0, $limit);
@@ -812,4 +817,17 @@ function wlt_bookshop_is_kill_switch_enabled(NodeInterface $node): bool {
   }
   $value = $node->get($kill_switch_field)->value;
   return in_array((string) $value, ['1', 'true', 'on'], TRUE);
+}
+/**
+ * Persist a sentinel value indicating no ISBNs were found.
+ */
+function wlt_bookshop_store_no_isbn(NodeInterface $node, string $isbn_field): void {
+  if (!$node->hasField($isbn_field)) {
+    return;
+  }
+  $existing = $node->get($isbn_field)->getValue();
+  if (count($existing) === 1 && isset($existing[0]['value']) && (string) $existing[0]['value'] === WLT_BOOKSHOP_NO_ISBN_SENTINEL) {
+    return;
+  }
+  $node->set($isbn_field, [['value' => WLT_BOOKSHOP_NO_ISBN_SENTINEL]]);
 }
