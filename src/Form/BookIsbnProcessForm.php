@@ -391,61 +391,78 @@ class BookIsbnProcessForm extends FormBase {
       ];
 
       $found = [];
+      $sequenceIds = 0;
       $debugInfo = $debugEnabled ? [] : NULL;
-      $author_sets = [];
+
+      $addedFromTitle = FALSE;
       if (!empty($title_authors)) {
-        $author_sets[] = ['type' => 'title', 'names' => $title_authors];
-      }
-      if (!empty($authors)) {
-        $author_sets[] = ['type' => 'author', 'names' => $authors];
-      }
-
-      foreach ($author_sets as $set) {
-        if (empty($set['names'])) {
-          continue;
-        }
-        $first = reset($set['names']);
-        $context['results']['current_node']['contributor'] = $first ?: '';
-        $context['results']['current_node']['contributor_type'] = $set['type'];
-        $added = \wlt_bookshop_collect_isbns_for_names($lookup, $set['names'], $found, PHP_INT_MAX, $debugInfo);
-        if ($added) {
-          break;
+        $addedFromTitle = \wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $found, PHP_INT_MAX, 'title_author', $debugInfo, $sequenceIds);
+        if ($addedFromTitle) {
+          $context['results']['current_node']['contributor'] = reset($title_authors) ?: '';
+          $context['results']['current_node']['contributor_type'] = 'title';
         }
       }
 
+      $addedFromAuthors = FALSE;
+      if (!$addedFromTitle && !empty($authors)) {
+        $addedFromAuthors = \wlt_bookshop_collect_isbns_for_names($lookup, $authors, $found, PHP_INT_MAX, 'author', $debugInfo, $sequenceIds);
+        if ($addedFromAuthors && $context['results']['current_node']['contributor'] === '') {
+          $context['results']['current_node']['contributor'] = reset($authors) ?: '';
+          $context['results']['current_node']['contributor_type'] = 'author';
+        }
+      }
+
+      $addedFromTranslators = FALSE;
       if (!empty($translators)) {
-        if ($context['results']['current_node']['contributor'] === '') {
+        $addedFromTranslators = \wlt_bookshop_collect_isbns_for_names($lookup, $translators, $found, PHP_INT_MAX, 'translator', $debugInfo, $sequenceIds);
+        if ($addedFromTranslators && $context['results']['current_node']['contributor'] === '') {
           $context['results']['current_node']['contributor'] = reset($translators) ?: '';
           $context['results']['current_node']['contributor_type'] = 'translator';
         }
-        \wlt_bookshop_collect_isbns_for_names($lookup, $translators, $found, PHP_INT_MAX, $debugInfo);
+      }
+
+      if ($context['results']['current_node']['contributor'] === '') {
+        if (!empty($title_authors)) {
+          $context['results']['current_node']['contributor'] = reset($title_authors) ?: '';
+          $context['results']['current_node']['contributor_type'] = 'title';
+        }
+        elseif (!empty($authors)) {
+          $context['results']['current_node']['contributor'] = reset($authors) ?: '';
+          $context['results']['current_node']['contributor_type'] = 'author';
+        }
+        elseif (!empty($translators)) {
+          $context['results']['current_node']['contributor'] = reset($translators) ?: '';
+          $context['results']['current_node']['contributor_type'] = 'translator';
+        }
       }
 
       $items = NULL;
       if (!empty($found)) {
         $existing_items = $node->get($isbn_field)->getValue();
-        $existing = [];
+        $existingOrdered = [];
         foreach ($existing_items as $item) {
           if (isset($item['value']) && $item['value'] !== '') {
-            $existing[$item['value']] = TRUE;
+            $existingOrdered[] = (string) $item['value'];
           }
         }
-        $before = count($existing);
-        foreach (array_keys($found) as $isbn) {
-          $isbn = (string) $isbn;
-          if ($isbn === '') {
-            continue;
+        $existingLookup = array_fill_keys($existingOrdered, TRUE);
+        $before = count($existingOrdered);
+
+        $orderedNew = \wlt_bookshop_rank_isbn_entries($node, $found);
+        foreach ($orderedNew as $isbn) {
+          if (!isset($existingLookup[$isbn])) {
+            $existingLookup[$isbn] = TRUE;
+            $existingOrdered[] = $isbn;
           }
-          $existing[$isbn] = TRUE;
         }
         $items = [];
-        foreach (array_keys($existing) as $isbn) {
+        foreach ($existingOrdered as $isbn) {
           $items[] = ['value' => $isbn];
         }
         try {
           $node->set($isbn_field, $items);
           $node->save();
-          $added_here = count($items) - $before;
+          $added_here = count($existingOrdered) - $before;
           if ($added_here > 0) {
             $stats['updated']++;
           }

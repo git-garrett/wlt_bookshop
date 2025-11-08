@@ -66,35 +66,31 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
   $limit = 12;
   $collected = [];
+  $sequence = 0;
 
-  $author_sources = [];
+  $addedFromTitle = FALSE;
   if (!empty($title_authors)) {
-    $author_sources[] = $title_authors;
+    $addedFromTitle = wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $collected, $limit, 'title_author', NULL, $sequence);
   }
-  if (!empty($authors)) {
-    $author_sources[] = $authors;
+  if (!$addedFromTitle && !empty($authors)) {
+    wlt_bookshop_collect_isbns_for_names($lookup, $authors, $collected, $limit, 'author', NULL, $sequence);
   }
-
-  foreach ($author_sources as $names) {
-    if (empty($names)) {
-      continue;
-    }
-    $added = wlt_bookshop_collect_isbns_for_names($lookup, $names, $collected, $limit);
-    if ($added) {
-      break;
-    }
-  }
-
   if (!empty($translators) && count($collected) < $limit) {
-    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, $limit);
+    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, $limit, 'translator', NULL, $sequence);
   }
 
   if (empty($collected)) {
     return;
   }
 
+  $orderedIsbns = wlt_bookshop_rank_isbn_entries($entity, $collected);
+  if (empty($orderedIsbns)) {
+    return;
+  }
+  $orderedIsbns = array_slice($orderedIsbns, 0, $limit);
+
   $items = [];
-  foreach (array_keys($collected) as $value) {
+  foreach ($orderedIsbns as $value) {
     $items[] = ['value' => $value];
   }
   $entity->set($isbn_field, $items);
@@ -124,32 +120,23 @@ function wlt_bookshop_get_isbn_from_node(NodeInterface $node): ?string {
   /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
   $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
   $collected = [];
-  $author_sources = [];
+  $sequence = 0;
+  $addedFromTitle = FALSE;
   if (!empty($title_authors)) {
-    $author_sources[] = $title_authors;
+    $addedFromTitle = wlt_bookshop_collect_isbns_for_names($lookup, $title_authors, $collected, 12, 'title_author', NULL, $sequence);
   }
-  if (!empty($authors)) {
-    $author_sources[] = $authors;
+  if (!$addedFromTitle && !empty($authors)) {
+    wlt_bookshop_collect_isbns_for_names($lookup, $authors, $collected, 12, 'author', NULL, $sequence);
   }
-  foreach ($author_sources as $names) {
-    if (empty($names)) {
-      continue;
-    }
-    $added = wlt_bookshop_collect_isbns_for_names($lookup, $names, $collected, 12);
-    if ($added) {
-      break;
-    }
-  }
-
-  if (empty($collected) && !empty($translators)) {
-    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, 12);
+  if (!empty($translators) && count($collected) < 12) {
+    wlt_bookshop_collect_isbns_for_names($lookup, $translators, $collected, 12, 'translator', NULL, $sequence);
   }
 
   if (empty($collected)) {
     return NULL;
   }
-  $values = array_keys($collected);
-  return $values[0] ?? NULL;
+  $ordered = wlt_bookshop_rank_isbn_entries($node, $collected);
+  return $ordered[0] ?? NULL;
 }
 
 /**
@@ -275,44 +262,144 @@ function wlt_bookshop_extract_title_authors(NodeInterface $node): array {
 }
 
 /**
- * Append ISBNs discovered for the provided contributor names.
+ * Append ISBN metadata discovered for the provided contributor names.
  */
-function wlt_bookshop_collect_isbns_for_names(\Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup, array $names, array &$collected, int $limit, ?array &$debug = NULL): bool {
+function wlt_bookshop_collect_isbns_for_names(\Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup, array $names, array &$collected, int $limit, string $source, ?array &$debug = NULL, int &$sequence = 0): bool {
   $added = FALSE;
   foreach ($names as $name) {
     $name = trim((string) $name);
     if ($name === '') {
       continue;
     }
-    if (method_exists($lookup, 'getIsbnsByAuthor')) {
+    if (method_exists($lookup, 'getIsbnEntriesByAuthor')) {
+      $entries = $debug !== NULL
+        ? $lookup->getIsbnEntriesByAuthor($name, $debug)
+        : $lookup->getIsbnEntriesByAuthor($name);
+    }
+    elseif (method_exists($lookup, 'getIsbnsByAuthor')) {
       $list = $debug !== NULL
         ? $lookup->getIsbnsByAuthor($name, $debug)
         : $lookup->getIsbnsByAuthor($name);
+      $entries = array_map(static fn($isbn) => ['isbn' => $isbn], (array) $list);
     }
     elseif (method_exists($lookup, 'getIsbnByAuthor')) {
       $single = $debug !== NULL
         ? $lookup->getIsbnByAuthor($name, $debug)
         : $lookup->getIsbnByAuthor($name);
-      $list = $single ? [$single] : [];
+      $entries = $single ? [['isbn' => $single]] : [];
     }
     else {
-      $list = [];
+      $entries = [];
     }
-    foreach ((array) $list as $isbn) {
-      $normalized = wlt_bookshop_normalize_isbn((string) $isbn);
+
+    foreach ($entries as $entry) {
+      $normalized = wlt_bookshop_normalize_isbn((string) ($entry['isbn'] ?? ''));
       if (!$normalized) {
         continue;
       }
       if (!isset($collected[$normalized])) {
-        $collected[$normalized] = TRUE;
+        $collected[$normalized] = [
+          'isbn' => $normalized,
+          'source' => $source,
+          'preferred' => !empty($entry['preferred']),
+          'title' => isset($entry['title']) ? (string) $entry['title'] : '',
+          'work_title' => isset($entry['work_title']) ? (string) $entry['work_title'] : '',
+          'discovery' => $sequence++,
+        ];
         $added = TRUE;
         if (count($collected) >= $limit) {
-          break 2;
+          return TRUE;
         }
       }
     }
   }
   return $added;
+}
+
+/**
+ * Extract the rendered body field text for substring comparisons.
+ */
+function wlt_bookshop_extract_body_text(NodeInterface $node): string {
+  if (!$node->hasField('body') || $node->get('body')->isEmpty()) {
+    return '';
+  }
+  $values = [];
+  foreach ($node->get('body') as $item) {
+    if (isset($item->value)) {
+      $values[] = (string) $item->value;
+    }
+  }
+  if (empty($values)) {
+    return '';
+  }
+  $combined = implode("\n", $values);
+  $combined = html_entity_decode($combined, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+  return strip_tags($combined);
+}
+
+/**
+ * Case-insensitive substring helper for normalized text.
+ */
+function wlt_bookshop_text_contains(string $haystack, string $needle): bool {
+  $haystack = mb_strtolower(trim($haystack), 'UTF-8');
+  $needle = mb_strtolower(trim($needle), 'UTF-8');
+  if ($haystack === '' || $needle === '') {
+    return FALSE;
+  }
+  return mb_strpos($haystack, $needle) !== FALSE;
+}
+
+/**
+ * Rank ISBN metadata based on title/body matches and cover preference.
+ */
+function wlt_bookshop_rank_isbn_entries(NodeInterface $node, array $entries): array {
+  if (empty($entries)) {
+    return [];
+  }
+
+  $configuredTitle = mb_strtolower(wlt_bookshop_get_configured_title_text($node));
+  $sidebarTitle = '';
+  if ($node->hasField('field_sidebartitle') && !$node->get('field_sidebartitle')->isEmpty()) {
+    $sidebarTitle = mb_strtolower(wlt_bookshop_sanitize_text((string) $node->get('field_sidebartitle')->value));
+  }
+  $bodyText = mb_strtolower(wlt_bookshop_sanitize_text(wlt_bookshop_extract_body_text($node)));
+
+  foreach ($entries as &$entry) {
+    $candidateTitle = $entry['title'] ?? '';
+    if ($candidateTitle === '' && !empty($entry['work_title'])) {
+      $candidateTitle = $entry['work_title'];
+    }
+    $normalizedTitle = mb_strtolower(wlt_bookshop_sanitize_text($candidateTitle));
+    $rank = 4;
+    if ($normalizedTitle !== '') {
+      if ($configuredTitle !== '' && wlt_bookshop_text_contains($configuredTitle, $normalizedTitle)) {
+        $rank = min($rank, 0);
+      }
+      if ($sidebarTitle !== '' && wlt_bookshop_text_contains($sidebarTitle, $normalizedTitle)) {
+        $rank = min($rank, 1);
+      }
+      if ($bodyText !== '' && wlt_bookshop_text_contains($bodyText, $normalizedTitle)) {
+        $rank = min($rank, 2);
+      }
+    }
+    if (!empty($entry['preferred'])) {
+      $rank = min($rank, 3);
+    }
+    if (($entry['source'] ?? '') === 'translator') {
+      $rank += 10;
+    }
+    $entry['rank'] = $rank;
+  }
+  unset($entry);
+
+  uasort($entries, static function (array $a, array $b): int {
+    if (($a['rank'] ?? 0) !== ($b['rank'] ?? 0)) {
+      return ($a['rank'] ?? 0) <=> ($b['rank'] ?? 0);
+    }
+    return ($a['discovery'] ?? 0) <=> ($b['discovery'] ?? 0);
+  });
+
+  return array_map(static fn(array $entry) => $entry['isbn'], $entries);
 }
 
 /**

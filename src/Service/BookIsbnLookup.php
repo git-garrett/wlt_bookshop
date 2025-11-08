@@ -27,11 +27,13 @@ class BookIsbnLookup {
   protected $logger;
 
   /**
-   * Cached author lookups for the current request when debug is disabled.
+   * Cached author lookups (full entry metadata) for the current request when
+   * debug output is disabled.
    *
    * @var array<string, array>
+   *   keyed by lowercased author name.
    */
-  protected array $authorCache = [];
+  protected array $authorEntryCache = [];
 
   /**
    * Cached edition payloads keyed by edition identifier.
@@ -463,10 +465,10 @@ class BookIsbnLookup {
    * @param string $author
    *   The author name.
    *
-   * @return string[]
-   *   A de-duplicated list of ISBNs (13 preferred), possibly empty.
+   * @return array<int, array>
+   *   A de-duplicated list of ISBN metadata arrays, ordered by relevance.
    */
-  public function getIsbnsByAuthor(string $author, ?array &$debug = NULL): array {
+  public function getIsbnEntriesByAuthor(string $author, ?array &$debug = NULL): array {
     $author = trim($author);
     if ($author === '') {
       return [];
@@ -474,8 +476,8 @@ class BookIsbnLookup {
 
     $useCache = !is_array($debug);
     $cacheKey = mb_strtolower($author, 'UTF-8');
-    if ($useCache && isset($this->authorCache[$cacheKey])) {
-      return $this->authorCache[$cacheKey];
+    if ($useCache && isset($this->authorEntryCache[$cacheKey])) {
+      return $this->authorEntryCache[$cacheKey];
     }
 
     $searchUrl = 'https://openlibrary.org/search.json';
@@ -558,6 +560,10 @@ class BookIsbnLookup {
       if (!is_array($doc)) {
         continue;
       }
+      $workTitle = $this->buildEditionTitle($doc);
+      $workContext = [
+        'work_title' => $workTitle,
+      ];
       $workKey = isset($doc['key']) ? (string) $doc['key'] : '';
       if ($workKey !== '' && isset($seenWorks[$workKey])) {
         continue;
@@ -610,23 +616,37 @@ class BookIsbnLookup {
           if (!is_array($payload)) {
             continue;
           }
-          $this->processEditionPayload($editionKey, $payload, $normalizedWork, $results, $sequence, $debug, $request['preferred']);
+          $this->processEditionPayload($editionKey, $payload, $normalizedWork, $results, $sequence, $debug, $request['preferred'], $workContext);
         }
       }
 
       if ($workKey !== '') {
-        $this->appendWorkEditionIsbns($workKey, $coverKey, $results, $sequence, $debug, $loadedEditions);
+        $this->appendWorkEditionIsbns($workKey, $coverKey, $results, $sequence, $debug, $loadedEditions, $workContext);
       }
     }
 
-    $final = $this->finalizeIsbnResults($results);
+    $finalEntries = $this->finalizeIsbnEntries($results);
     if (is_array($debug)) {
-      $debug['found_isbns'] = $final;
+      $debug['found_isbns'] = array_map(static fn(array $entry) => $entry['isbn'], $finalEntries);
     }
     elseif ($useCache) {
-      $this->authorCache[$cacheKey] = $final;
+      $this->authorEntryCache[$cacheKey] = $finalEntries;
     }
-    return $final;
+    return $finalEntries;
+  }
+
+  /**
+   * Backwards-compatible wrapper returning just the ordered ISBN strings.
+   *
+   * @return string[]
+   *   Unique ISBN values ordered by relevance.
+   */
+  public function getIsbnsByAuthor(string $author, ?array &$debug = NULL): array {
+    $entries = $this->getIsbnEntriesByAuthor($author, $debug);
+    if (empty($entries)) {
+      return [];
+    }
+    return array_values(array_map(static fn(array $entry) => $entry['isbn'], $entries));
   }
 
   /**
@@ -752,9 +772,15 @@ class BookIsbnLookup {
   /**
    * Append ISBN data from a loaded edition payload.
    */
-  protected function processEditionPayload(string $editionKey, array $payload, string $workKey, array &$results, int &$sequence, ?array &$debug, bool $preferred = FALSE): void {
+  protected function processEditionPayload(string $editionKey, array $payload, string $workKey, array &$results, int &$sequence, ?array &$debug, bool $preferred = FALSE, array $context = []): void {
     $normalizedWork = $this->normalizeWorkKey($workKey, $payload['works'] ?? [], $editionKey);
     $formatInfo = $this->determineFormat($payload);
+    $workTitle = $context['work_title'] ?? '';
+    $editionTitle = $this->buildEditionTitle($payload, $workTitle);
+    $entryContext = [
+      'title' => $editionTitle,
+      'work_title' => $workTitle,
+    ];
 
     $isbns = [];
     if (!empty($payload['isbn_13']) && is_array($payload['isbn_13'])) {
@@ -765,7 +791,7 @@ class BookIsbnLookup {
     }
 
     foreach ($isbns as $isbn) {
-      $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, $preferred, $results, $sequence);
+      $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, $preferred, $results, $sequence, $entryContext);
     }
 
     if (is_array($debug)) {
@@ -799,7 +825,7 @@ class BookIsbnLookup {
   /**
    * Fetch editions for a work and append any additional ISBNs found.
    */
-  protected function appendWorkEditionIsbns(string $workKey, string $coverKey, array &$results, int &$sequence, ?array &$debug, array &$loadedEditions): void {
+  protected function appendWorkEditionIsbns(string $workKey, string $coverKey, array &$results, int &$sequence, ?array &$debug, array &$loadedEditions, array $context = []): void {
     $workKey = trim($workKey);
     if ($workKey === '') {
       return;
@@ -894,9 +920,14 @@ class BookIsbnLookup {
       if (empty($isbns)) {
         continue;
       }
+      $editionTitle = $this->buildEditionTitle($entry, $context['work_title'] ?? '');
+      $entryContext = [
+        'title' => $editionTitle,
+        'work_title' => $context['work_title'] ?? '',
+      ];
       $formatInfo = $this->determineFormat($entry);
       foreach ($isbns as $isbn) {
-        $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, FALSE, $results, $sequence);
+        $this->storeIsbnEntry($isbn, $normalizedWork, $formatInfo, FALSE, $results, $sequence, $entryContext);
       }
     }
 
@@ -910,7 +941,7 @@ class BookIsbnLookup {
         if (!is_array($payload)) {
           continue;
         }
-        $this->processEditionPayload($editionKey, $payload, $normalizedWork, $results, $sequence, $debug, FALSE);
+        $this->processEditionPayload($editionKey, $payload, $normalizedWork, $results, $sequence, $debug, FALSE, $context);
       }
     }
   }
@@ -1003,6 +1034,35 @@ class BookIsbnLookup {
     ];
   }
 
+  /**
+   * Build a human-readable title string from Open Library payload data.
+   */
+  protected function buildEditionTitle(array $data, string $fallback = ''): string {
+    $title = '';
+    if (!empty($data['title']) && is_string($data['title'])) {
+      $title = trim((string) $data['title']);
+    }
+    $subtitle = '';
+    if (!empty($data['subtitle']) && is_string($data['subtitle'])) {
+      $subtitle = trim((string) $data['subtitle']);
+    }
+    if ($title === '' && $fallback !== '') {
+      $title = $fallback;
+    }
+    if ($title === '' && $subtitle !== '') {
+      $title = $subtitle;
+      $subtitle = '';
+    }
+    $combined = $title;
+    if ($subtitle !== '') {
+      $combined = $combined !== '' ? $combined . ': ' . $subtitle : $subtitle;
+    }
+    if ($combined === '' && !empty($data['edition_name']) && is_string($data['edition_name'])) {
+      $combined = trim((string) $data['edition_name']);
+    }
+    return $combined;
+  }
+
   protected function formatScore(array $formatInfo): int {
     $format = $formatInfo['format'] ?? 'other';
     return match ($format) {
@@ -1040,11 +1100,13 @@ class BookIsbnLookup {
     return 0;
   }
 
-  protected function storeIsbnEntry(string $isbn, string $workKey, array $formatInfo, bool $preferred, array &$results, int &$sequence): void {
+  protected function storeIsbnEntry(string $isbn, string $workKey, array $formatInfo, bool $preferred, array &$results, int &$sequence, array $context = []): void {
     $normalized = preg_replace('/[^0-9X]/i', '', $isbn);
     if ($normalized === '') {
       return;
     }
+    $workTitle = $context['work_title'] ?? '';
+    $editionTitle = $context['title'] ?? $workTitle;
     $entry = [
       'isbn' => $normalized,
       'score' => $this->formatScore($formatInfo),
@@ -1054,6 +1116,8 @@ class BookIsbnLookup {
       'preferred' => $preferred,
       'format' => $formatInfo['format'] ?? 'other',
       'work' => $workKey,
+      'title' => $editionTitle,
+      'work_title' => $workTitle,
     ];
 
     if (!isset($results[$normalized])) {
@@ -1089,7 +1153,7 @@ class BookIsbnLookup {
     return $candidate['order'] < $existing['order'];
   }
 
-  protected function finalizeIsbnResults(array $results): array {
+  protected function finalizeIsbnEntries(array $results): array {
     if (empty($results)) {
       return [];
     }
@@ -1145,11 +1209,19 @@ class BookIsbnLookup {
     $final = [];
     foreach ($byWork as $workData) {
       foreach ($workData['entries'] as $isbn => $info) {
-        $final[] = $isbn;
+        $final[] = $info;
       }
     }
 
     return $final;
+  }
+
+  protected function finalizeIsbnResults(array $results): array {
+    $entries = $this->finalizeIsbnEntries($results);
+    if (empty($entries)) {
+      return [];
+    }
+    return array_values(array_map(static fn(array $entry) => $entry['isbn'], $entries));
   }
 
   /**
