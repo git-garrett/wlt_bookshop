@@ -72,6 +72,12 @@ class BookIsbnProcessForm extends FormBase {
       '#description' => $this->t('Display author, API queries, responses summary, and stored values.'),
       '#default_value' => FALSE,
     ];
+    $form['replace_existing'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Replace existing ISBNs'),
+      '#description' => $this->t('When checked, nodes are processed even if they already have ISBNs, and any new results overwrite the stored values.'),
+      '#default_value' => FALSE,
+    ];
 
     $form['actions'] = [
       '#type' => 'actions',
@@ -125,6 +131,7 @@ class BookIsbnProcessForm extends FormBase {
     $processAll = (bool) $form_state->getValue('process_all');
     $batchSize = (int) $form_state->getValue('batch_size');
     $batchSize = max(1, min(500, $batchSize ?: 100));
+    $replaceExisting = (bool) $form_state->getValue('replace_existing');
 
     $storage = \Drupal::entityTypeManager()->getStorage('node');
     $bundle_settings = array_filter(
@@ -163,31 +170,31 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting);
       return;
     }
 
     if ($processAll) {
-      $all_nids = static::collectCandidateNodeIds($bundle_settings);
+      $all_nids = static::collectCandidateNodeIds($bundle_settings, NULL, $replaceExisting);
       if (empty($all_nids)) {
         $this->messenger()->addStatus($this->t('No nodes require processing.'));
         return;
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled, $apiVerbose);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting);
       return;
     }
 
     // Otherwise, process a batch of nodes up to the limit.
-    $nids = static::collectCandidateNodeIds($bundle_settings, $limit);
+    $nids = static::collectCandidateNodeIds($bundle_settings, $limit, $replaceExisting);
     if (empty($nids)) {
       $this->messenger()->addStatus($this->t('No nodes require processing.'));
       return;
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled, $apiVerbose);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting);
   }
 
   /**
@@ -197,15 +204,18 @@ class BookIsbnProcessForm extends FormBase {
    *   Nested arrays of node IDs to process per operation.
    * @param bool $debugEnabled
    *   Whether debug output should be collected.
-   * @param bool $apiVerbose
-   *   Whether verbose API logging is enabled.
+  * @param bool $apiVerbose
+  *   Whether verbose API logging is enabled.
+   * @param bool $replaceExisting
+   *   TRUE to allow processing nodes that already contain ISBNs and replace
+   *   their current values.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled, $apiVerbose],
+        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting],
       ];
     }
 
@@ -234,10 +244,12 @@ class BookIsbnProcessForm extends FormBase {
    *   TRUE when debug output should be aggregated.
    * @param bool $apiVerbose
    *   TRUE to log verbose API traffic.
+   * @param bool $replaceExisting
+   *   TRUE when existing ISBN values should be fully replaced.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -260,7 +272,7 @@ class BookIsbnProcessForm extends FormBase {
       $lookup->setVerboseLogging($apiVerbose);
     }
 
-    static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context);
+    static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting);
 
     $statsAfter = $lookup->getApiStats();
     $batchApiStats = static::diffApiStats($statsAfter, $statsBefore);
@@ -356,8 +368,11 @@ class BookIsbnProcessForm extends FormBase {
    *   Aggregated debug output string.
    * @param array $context
    *   Batch context array reference for logging/progress.
+   * @param bool $replaceExisting
+   *   TRUE when existing ISBN values should be overwritten if new results are
+   *   found.
    */
-  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context): void {
+  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE): void {
     foreach ($nodes as $node) {
       $stats['checked']++;
       if (!$node instanceof NodeInterface) {
@@ -449,6 +464,11 @@ class BookIsbnProcessForm extends FormBase {
         $before = count($existingOrdered);
 
         $orderedNew = \wlt_bookshop_rank_isbn_entries($node, $found);
+        if ($replaceExisting && !empty($orderedNew)) {
+          $existingOrdered = [];
+          $existingLookup = [];
+          $before = 0;
+        }
         foreach ($orderedNew as $isbn) {
           if (!isset($existingLookup[$isbn])) {
             $existingLookup[$isbn] = TRUE;
@@ -502,7 +522,7 @@ class BookIsbnProcessForm extends FormBase {
    * @return int[]
    *   Ordered node IDs sorted by most recently changed first.
    */
-  protected static function collectCandidateNodeIds(array $bundle_settings, ?int $limit = NULL): array {
+  protected static function collectCandidateNodeIds(array $bundle_settings, ?int $limit = NULL, bool $includeExisting = FALSE): array {
     if (empty($bundle_settings)) {
       return [];
     }
@@ -527,8 +547,10 @@ class BookIsbnProcessForm extends FormBase {
       $query = \Drupal::entityQuery('node')
         ->accessCheck(FALSE)
         ->condition('type', $bundle)
-        ->notExists($isbn_field)
         ->sort('changed', 'DESC');
+      if (!$includeExisting) {
+        $query->notExists($isbn_field);
+      }
       $group = $query->orConditionGroup()
         ->exists($author_field);
       if ($translator_field !== '') {
@@ -546,70 +568,73 @@ class BookIsbnProcessForm extends FormBase {
         $query->range(0, max(0, $remaining));
       }
       if ($debug) {
-        \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle query: requires contributors (author: @author, translator: @translator, title: @title), ISBN field @isbn empty, kill switch @kill != 1.', [
+        \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle query: requires contributors (author: @author, translator: @translator, title: @title), ISBN field @isbn state @state, kill switch @kill != 1.', [
           '@bundle' => $bundle,
           '@author' => $author_field,
           '@translator' => $translator_field ?: '(none)',
           '@title' => $title_field ?: '(none)',
           '@isbn' => $isbn_field,
+          '@state' => $includeExisting ? 'any value' : 'empty',
           '@kill' => $kill_field ?: '(none)',
         ]);
 
-        $candidate_ids = \Drupal::entityQuery('node')
-          ->accessCheck(FALSE)
-          ->condition('type', $bundle)
-          ->execute();
+        if (!$includeExisting) {
+          $candidate_ids = \Drupal::entityQuery('node')
+            ->accessCheck(FALSE)
+            ->condition('type', $bundle)
+            ->execute();
 
-        if (empty($candidate_ids)) {
-          \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle contains no nodes.', ['@bundle' => $bundle]);
-        }
-        else {
-          $storage = \Drupal::entityTypeManager()->getStorage('node');
-          /** @var \Drupal\node\NodeInterface[] $nodes_to_check */
-          $nodes_to_check = $storage->loadMultiple($candidate_ids);
-
-          $total = count($nodes_to_check);
-          $with_author = [];
-          $isbn_empty = [];
-          $eligible = [];
-
-          foreach ($nodes_to_check as $candidate) {
-            $has_author = $candidate->hasField($author_field) && !$candidate->get($author_field)->isEmpty();
-            if ($has_author) {
-              $with_author[] = $candidate->id();
-            }
+          if (empty($candidate_ids)) {
+            \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle contains no nodes.', ['@bundle' => $bundle]);
           }
+          else {
+            $storage = \Drupal::entityTypeManager()->getStorage('node');
+            /** @var \Drupal\node\NodeInterface[] $nodes_to_check */
+            $nodes_to_check = $storage->loadMultiple($candidate_ids);
 
-          if (!empty($with_author)) {
-            $isbn_empty_ids = \Drupal::entityQuery('node')
-              ->accessCheck(FALSE)
-              ->condition('nid', $with_author, 'IN')
-              ->notExists($isbn_field)
-              ->execute();
-            $isbn_empty = array_values($isbn_empty_ids);
-          }
+            $total = count($nodes_to_check);
+            $with_author = [];
+            $isbn_empty = [];
+            $eligible = [];
 
-          if (!empty($isbn_empty)) {
-            $eligible = $isbn_empty;
-            if ($kill_field !== '') {
-              $kill_on = \Drupal::entityQuery('node')
-                ->accessCheck(FALSE)
-                ->condition('nid', $isbn_empty, 'IN')
-                ->condition($kill_field, '1')
-                ->execute();
-              if (!empty($kill_on)) {
-                $eligible = array_values(array_diff($isbn_empty, $kill_on));
+            foreach ($nodes_to_check as $candidate) {
+              $has_author = $candidate->hasField($author_field) && !$candidate->get($author_field)->isEmpty();
+              if ($has_author) {
+                $with_author[] = $candidate->id();
               }
             }
-          }
 
-          \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle stats: total=@total, pass_author=@author_count, pass_isbn=@isbn_count, final_candidates=@final_count.', [
-            '@bundle' => $bundle,
-            '@total' => $total,
-            '@author_count' => count($with_author),
-            '@isbn_count' => count($isbn_empty),
-            '@final_count' => count($eligible),
-          ]);
+            if (!empty($with_author)) {
+              $isbn_empty_ids = \Drupal::entityQuery('node')
+                ->accessCheck(FALSE)
+                ->condition('nid', $with_author, 'IN')
+                ->notExists($isbn_field)
+                ->execute();
+              $isbn_empty = array_values($isbn_empty_ids);
+            }
+
+            if (!empty($isbn_empty)) {
+              $eligible = $isbn_empty;
+              if ($kill_field !== '') {
+                $kill_on = \Drupal::entityQuery('node')
+                  ->accessCheck(FALSE)
+                  ->condition('nid', $isbn_empty, 'IN')
+                  ->condition($kill_field, '1')
+                  ->execute();
+                if (!empty($kill_on)) {
+                  $eligible = array_values(array_diff($isbn_empty, $kill_on));
+                }
+              }
+            }
+
+            \Drupal::logger('wlt_bookshop_batch')->notice('Bundle @bundle stats: total=@total, pass_author=@author_count, pass_isbn=@isbn_count, final_candidates=@final_count.', [
+              '@bundle' => $bundle,
+              '@total' => $total,
+              '@author_count' => count($with_author),
+              '@isbn_count' => count($isbn_empty),
+              '@final_count' => count($eligible),
+            ]);
+          }
         }
       }
       $ids = $query->execute();
@@ -625,12 +650,13 @@ class BookIsbnProcessForm extends FormBase {
       }
       if (empty($ids)) {
         if ($debug) {
-          \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes found for bundle @bundle (author field: @author, translator field: @translator, title field: @title_field, ISBN field: @isbn, kill switch: @kill).', [
+          \Drupal::logger('wlt_bookshop_batch')->notice('No candidate nodes found for bundle @bundle (author field: @author, translator field: @translator, title field: @title_field, ISBN field: @isbn state @state, kill switch: @kill).', [
             '@bundle' => $bundle,
             '@author' => $author_field,
             '@translator' => $translator_field ?: '(none)',
             '@title_field' => $title_field ?: '(none)',
             '@isbn' => $isbn_field,
+            '@state' => $includeExisting ? 'any value' : 'empty',
             '@kill' => $kill_field ?: '(none)',
           ]);
         }

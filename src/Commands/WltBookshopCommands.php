@@ -37,6 +37,7 @@ class WltBookshopCommands extends DrushCommands {
    * @option batch-size Size of each chunk when processing multiple nodes (default 100).
    * @option debug Collect and display per-node debug output (default FALSE).
    * @option api-verbose Output verbose Open Library request/response logging (default FALSE).
+   * @option replace-existing Reprocess nodes even if they already have ISBNs and overwrite stored values.
    */
   public function processIsbn(array $options = [
     'nid' => NULL,
@@ -45,6 +46,7 @@ class WltBookshopCommands extends DrushCommands {
     'batch-size' => 100,
     'debug' => FALSE,
     'api-verbose' => FALSE,
+    'replace-existing' => FALSE,
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
@@ -52,6 +54,7 @@ class WltBookshopCommands extends DrushCommands {
     $batchSize = max(1, min(500, (int) ($options['batch-size'] ?? 100)));
     $debug = !empty($options['debug']);
     $apiVerbose = !empty($options['api-verbose']);
+    $replaceExisting = !empty($options['replace-existing']);
 
     $values = [
       'nid' => $nid > 0 ? $nid : '',
@@ -60,6 +63,7 @@ class WltBookshopCommands extends DrushCommands {
       'batch_size' => $batchSize,
       'debug' => $debug,
       'api_verbose' => $apiVerbose,
+      'replace_existing' => $replaceExisting,
     ];
 
     /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */
