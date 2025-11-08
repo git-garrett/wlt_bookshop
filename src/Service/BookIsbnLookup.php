@@ -17,8 +17,8 @@ class BookIsbnLookup {
   public const API_STAT_KEYS = ['search', 'edition', 'work'];
 
   private const OPEN_LIBRARY_USER_AGENT = 'WorldLiteratureToday (staff@evenvision.com)';
-  private const OPEN_LIBRARY_RATE_LIMIT = 5; 
-  private const OPEN_LIBRARY_WINDOW_SECONDS = 1; 
+  private const OPEN_LIBRARY_RATE_LIMIT = 1; 
+  private const OPEN_LIBRARY_WINDOW_SECONDS = 3; 
 
   /** @var \GuzzleHttp\ClientInterface */
   protected $httpClient;
