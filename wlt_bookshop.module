@@ -238,11 +238,36 @@ function wlt_bookshop_extract_title_authors(NodeInterface $node): array {
     return [];
   }
   $lower = mb_strtolower($text, 'UTF-8');
-  $pos = mb_strripos($lower, ' by ');
-  if ($pos === FALSE) {
-    return [];
+  $patterns = [
+    ' by ' => ' by ',
+    ' with ' => ' with ',
+    ' - ' => ' - ',
+  ];
+  $match = [
+    'pos' => FALSE,
+    'pattern' => '',
+  ];
+  foreach ($patterns as $key => $pattern) {
+    $found = mb_strripos($lower, $pattern);
+    if ($found !== FALSE && ($match['pos'] === FALSE || $found > $match['pos'])) {
+      $match = [
+        'pos' => $found,
+        'pattern' => $pattern,
+      ];
+    }
   }
-  $raw = mb_substr($text, $pos + 4, NULL, 'UTF-8');
+  $raw = '';
+  if ($match['pos'] !== FALSE) {
+    $raw = mb_substr($text, $match['pos'] + mb_strlen($match['pattern'], 'UTF-8'), NULL, 'UTF-8');
+  }
+  else {
+    if (preg_match('/"[^"]+"\s+(.+)$/u', $text, $matches)) {
+      $raw = $matches[1] ?? '';
+    }
+    else {
+      return [];
+    }
+  }
   $raw = trim($raw);
   if ($raw === '') {
     return [];
