@@ -80,6 +80,11 @@ class BookIsbnLookup {
     'other' => 0,
   ];
 
+  /**
+   * When TRUE, edition/work lookups are skipped in favor of search doc data.
+   */
+  protected bool $skipEditionLookups = FALSE;
+
   public function __construct(ClientInterface $http_client, LoggerInterface $logger) {
     $this->httpClient = $http_client;
     $this->logger = $logger;
@@ -97,6 +102,13 @@ class BookIsbnLookup {
    */
   public function getApiStats(): array {
     return $this->apiStats;
+  }
+
+  /**
+   * Enable or disable edition/work lookups.
+   */
+  public function setSkipEditionLookups(bool $enabled): void {
+    $this->skipEditionLookups = $enabled;
   }
 
   /**
@@ -371,6 +383,21 @@ class BookIsbnLookup {
       return NULL;
     }
 
+    if ($this->skipEditionLookups) {
+      foreach ($data['docs'] as $doc) {
+        if (empty($doc['isbn']) || !is_array($doc['isbn'])) {
+          continue;
+        }
+        foreach ($doc['isbn'] as $candidate) {
+          $normalized = preg_replace('/[^0-9X]/i', '', (string) $candidate);
+          if ($normalized !== '') {
+            return $normalized;
+          }
+        }
+      }
+      return NULL;
+    }
+
     $loadedEditions = [];
     if (is_array($debug)) {
       $debug['author'] = $author;
@@ -474,7 +501,7 @@ class BookIsbnLookup {
       return [];
     }
 
-    $useCache = !is_array($debug);
+    $useCache = !is_array($debug) && !$this->skipEditionLookups;
     $cacheKey = mb_strtolower($author, 'UTF-8');
     if ($useCache && isset($this->authorEntryCache[$cacheKey])) {
       return $this->authorEntryCache[$cacheKey];
@@ -539,6 +566,15 @@ class BookIsbnLookup {
         ];
       }
       return [];
+    }
+
+    if ($this->skipEditionLookups) {
+      $entries = $this->buildSearchDocIsbnEntries($data['docs']);
+      if (is_array($debug)) {
+        $debug['search_only'] = TRUE;
+        $debug['found_isbns'] = array_map(static fn(array $entry) => $entry['isbn'], $entries);
+      }
+      return $entries;
     }
 
     $results = [];
@@ -1305,6 +1341,62 @@ class BookIsbnLookup {
       $debug['bookshop']['eans'] = array_keys($eans);
     }
     return array_keys($eans);
+  }
+
+  /**
+   * Build ISBN entries directly from search documents.
+   *
+   * @param array $docs
+   *   Search results containing potential ISBN arrays.
+   *
+   * @return array<int, array>
+   *   Ordered ISBN entries.
+   */
+  protected function buildSearchDocIsbnEntries(array $docs): array {
+    if (empty($docs)) {
+      return [];
+    }
+    $results = [];
+    $sequence = 0;
+    foreach ($docs as $doc) {
+      if (empty($doc['isbn']) || !is_array($doc['isbn'])) {
+        continue;
+      }
+      $title = '';
+      if (!empty($doc['title'])) {
+        $title = (string) $doc['title'];
+      }
+      elseif (!empty($doc['title_suggest'])) {
+        $title = (string) $doc['title_suggest'];
+      }
+      foreach ($doc['isbn'] as $candidate) {
+        $normalized = preg_replace('/[^0-9X]/i', '', (string) $candidate);
+        if ($normalized === '') {
+          continue;
+        }
+        if (!isset($results[$normalized])) {
+          $results[$normalized] = [
+            'isbn' => $normalized,
+            'title' => $title,
+            'work_title' => $title,
+            'preferred' => FALSE,
+            'score' => 0,
+            'langScore' => 0,
+            'countryScore' => 0,
+            'order' => $sequence++,
+            'format' => 'other',
+            'work' => '',
+          ];
+        }
+      }
+    }
+    if (empty($results)) {
+      return [];
+    }
+    uasort($results, static function (array $a, array $b): int {
+      return $a['order'] <=> $b['order'];
+    });
+    return array_values($results);
   }
 
   /**

@@ -38,6 +38,7 @@ class WltBookshopCommands extends DrushCommands {
    * @option debug Collect and display per-node debug output (default FALSE).
    * @option api-verbose Output verbose Open Library request/response logging (default FALSE).
    * @option replace-existing Reprocess nodes even if they already have ISBNs and overwrite stored values.
+   * @option search-only Skip edition API lookups and only use ISBNs returned in the initial search results.
    */
   public function processIsbn(array $options = [
     'nid' => NULL,
@@ -47,6 +48,7 @@ class WltBookshopCommands extends DrushCommands {
     'debug' => FALSE,
     'api-verbose' => FALSE,
     'replace-existing' => FALSE,
+    'search-only' => FALSE,
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
@@ -55,6 +57,7 @@ class WltBookshopCommands extends DrushCommands {
     $debug = !empty($options['debug']);
     $apiVerbose = !empty($options['api-verbose']);
     $replaceExisting = !empty($options['replace-existing']);
+    $searchOnly = !empty($options['search-only']);
 
     $values = [
       'nid' => $nid > 0 ? $nid : '',
@@ -64,6 +67,7 @@ class WltBookshopCommands extends DrushCommands {
       'debug' => $debug,
       'api_verbose' => $apiVerbose,
       'replace_existing' => $replaceExisting,
+      'search_only' => $searchOnly,
     ];
 
     /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */

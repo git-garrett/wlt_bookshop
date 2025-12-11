@@ -12,6 +12,9 @@ if (!defined('WLT_BOOKSHOP_DEFAULT_AFFILIATE_ID')) {
 if (!defined('WLT_BOOKSHOP_NO_ISBN_SENTINEL')) {
   define('WLT_BOOKSHOP_NO_ISBN_SENTINEL', '0000');
 }
+if (!defined('WLT_BOOKSHOP_DISABLE_PRESAVE_LOOKUP')) {
+  define('WLT_BOOKSHOP_DISABLE_PRESAVE_LOOKUP', TRUE);
+}
 
 /**
  * Implements hook_help().
@@ -28,6 +31,9 @@ function wlt_bookshop_help($route_name, RouteMatchInterface $route_match) {
  * Populate ISBNs for enabled bundles using author data.
  */
 function wlt_bookshop_entity_presave(EntityInterface $entity): void {
+  if (defined('WLT_BOOKSHOP_DISABLE_PRESAVE_LOOKUP') && WLT_BOOKSHOP_DISABLE_PRESAVE_LOOKUP) {
+    return;
+  }
   if ($entity->getEntityTypeId() !== 'node') {
     return;
   }

@@ -78,6 +78,12 @@ class BookIsbnProcessForm extends FormBase {
       '#description' => $this->t('When checked, nodes are processed even if they already have ISBNs, and any new results overwrite the stored values.'),
       '#default_value' => FALSE,
     ];
+    $form['search_only'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Skip edition lookups'),
+      '#description' => $this->t('Only use ISBN values returned by the initial search query and avoid calling the edition APIs.'),
+      '#default_value' => FALSE,
+    ];
 
     $form['actions'] = [
       '#type' => 'actions',
@@ -132,6 +138,7 @@ class BookIsbnProcessForm extends FormBase {
     $batchSize = (int) $form_state->getValue('batch_size');
     $batchSize = max(1, min(500, $batchSize ?: 100));
     $replaceExisting = (bool) $form_state->getValue('replace_existing');
+    $searchOnly = (bool) $form_state->getValue('search_only');
 
     $storage = \Drupal::entityTypeManager()->getStorage('node');
     $bundle_settings = array_filter(
@@ -170,7 +177,7 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly);
       return;
     }
 
@@ -182,7 +189,7 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly);
       return;
     }
 
@@ -194,7 +201,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly);
   }
 
   /**
@@ -204,18 +211,20 @@ class BookIsbnProcessForm extends FormBase {
    *   Nested arrays of node IDs to process per operation.
    * @param bool $debugEnabled
    *   Whether debug output should be collected.
-  * @param bool $apiVerbose
-  *   Whether verbose API logging is enabled.
+   * @param bool $apiVerbose
+   *   Whether verbose API logging is enabled.
    * @param bool $replaceExisting
    *   TRUE to allow processing nodes that already contain ISBNs and replace
    *   their current values.
+   * @param bool $searchOnly
+   *   TRUE to skip edition lookups and use only search results.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting],
+        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly],
       ];
     }
 
@@ -246,10 +255,12 @@ class BookIsbnProcessForm extends FormBase {
    *   TRUE to log verbose API traffic.
    * @param bool $replaceExisting
    *   TRUE when existing ISBN values should be fully replaced.
+   * @param bool $searchOnly
+   *   TRUE when edition lookups should be skipped and only search results used.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -274,7 +285,18 @@ class BookIsbnProcessForm extends FormBase {
       $lookup->setVerboseLogging($apiVerbose);
     }
 
-    static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting);
+    if (method_exists($lookup, 'setSkipEditionLookups')) {
+      $lookup->setSkipEditionLookups($searchOnly);
+    }
+
+    try {
+      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting);
+    }
+    finally {
+      if (method_exists($lookup, 'setSkipEditionLookups')) {
+        $lookup->setSkipEditionLookups(FALSE);
+      }
+    }
 
     $statsAfter = $lookup->getApiStats();
     $batchApiStats = static::diffApiStats($statsAfter, $statsBefore);
@@ -306,8 +328,11 @@ class BookIsbnProcessForm extends FormBase {
       }
     }
 
-    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far (elapsed @seconds s). Batch API calls: @batch. Total API calls: @total.@node', [
+    $context['message'] = \Drupal::translation()->translate('Processed @count nodes so far (updated @updated, ISBNs +@isbn, no ISBN @sentinel; elapsed @seconds s). Batch API calls: @batch. Total API calls: @total.@node', [
       '@count' => $context['results']['checked'],
+      '@updated' => $context['results']['updated'],
+      '@isbn' => $context['results']['isbn_added'],
+      '@sentinel' => $context['results']['sentinel'],
       '@seconds' => number_format($elapsed, 2),
       '@batch' => static::formatApiStats($batchApiStats),
       '@total' => static::formatApiStats($context['results']['api_totals']),
