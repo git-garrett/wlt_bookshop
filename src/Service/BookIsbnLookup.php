@@ -324,7 +324,7 @@ class BookIsbnLookup {
     // 1) Search by author to get works; prefer docs with a cover_edition_key.
     $searchUrl = 'https://openlibrary.org/search.json';
     $query = [
-      'author' => $author,
+      'q' => 'author:' . $author,
       'limit' => 250,
     ];
 
@@ -509,7 +509,7 @@ class BookIsbnLookup {
 
     $searchUrl = 'https://openlibrary.org/search.json';
     $query = [
-      'author' => $author,
+      'q' => 'author:' . $author,
       'limit' => 250,
     ];
 
