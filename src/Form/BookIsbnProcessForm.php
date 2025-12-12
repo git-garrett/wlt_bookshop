@@ -78,6 +78,18 @@ class BookIsbnProcessForm extends FormBase {
       '#description' => $this->t('When checked, nodes are processed even if they already have ISBNs, and any new results overwrite the stored values.'),
       '#default_value' => FALSE,
     ];
+    $form['replace_sentinels_only'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Replace sentinel ISBNs'),
+      '#description' => $this->t('Only reprocess nodes whose ISBN field contains the sentinel value (0000).'),
+      '#default_value' => FALSE,
+    ];
+    $form['replace_blank_or_sentinel'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Replace blanks and sentinel ISBNs'),
+      '#description' => $this->t('Reprocess nodes where the ISBN field is empty or contains the sentinel value.'),
+      '#default_value' => FALSE,
+    ];
     $form['search_only'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Skip edition lookups'),
@@ -156,6 +168,8 @@ class BookIsbnProcessForm extends FormBase {
     $batchSize = (int) $form_state->getValue('batch_size');
     $batchSize = max(1, min(500, $batchSize ?: 100));
     $replaceExisting = (bool) $form_state->getValue('replace_existing');
+    $replaceSentinelsOnly = (bool) $form_state->getValue('replace_sentinels_only');
+    $replaceBlankOrSentinel = (bool) $form_state->getValue('replace_blank_or_sentinel');
     $searchOnly = (bool) $form_state->getValue('search_only');
     $workIndexPath = trim((string) $form_state->getValue('work_index_path'));
     $editionIndexPath = trim((string) $form_state->getValue('edition_index_path'));
@@ -198,7 +212,7 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel);
       return;
     }
 
@@ -210,19 +224,19 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel);
       return;
     }
 
     // Otherwise, process a batch of nodes up to the limit.
-    $nids = static::collectCandidateNodeIds($bundle_settings, $limit, $replaceExisting);
+    $nids = static::collectCandidateNodeIds($bundle_settings, $limit, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel);
     if (empty($nids)) {
       $this->messenger()->addStatus($this->t('No nodes require processing.'));
       return;
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel);
   }
 
   /**
@@ -246,12 +260,12 @@ class BookIsbnProcessForm extends FormBase {
    * @param string $editionDumpPath
    *   Optional edition dump file path.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath],
+        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel],
       ];
     }
 
@@ -290,10 +304,14 @@ class BookIsbnProcessForm extends FormBase {
    *   Edition index path provided by the form/CLI.
    * @param string $editionDumpPath
    *   Edition dump path provided by the form/CLI.
+   * @param bool $replaceSentinelsOnly
+   *   TRUE to restrict replacements to sentinel values.
+   * @param bool $replaceBlankOrSentinel
+   *   TRUE to replace values when blank or sentinel.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -331,7 +349,7 @@ class BookIsbnProcessForm extends FormBase {
       if (method_exists($lookup, 'setEditionDumpPath')) {
         $lookup->setEditionDumpPath($editionDumpPath !== '' ? $editionDumpPath : NULL);
       }
-      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting);
+      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel);
     }
     finally {
       if (method_exists($lookup, 'setSkipEditionLookups')) {
@@ -454,7 +472,7 @@ class BookIsbnProcessForm extends FormBase {
    *   TRUE when existing ISBN values should be overwritten if new results are
    *   found.
    */
-  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE): void {
+  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE, bool $replaceSentinelsOnly = FALSE, bool $replaceBlankOrSentinel = FALSE): void {
     foreach ($nodes as $node) {
       $stats['checked']++;
       if (!$node instanceof NodeInterface) {
@@ -625,7 +643,7 @@ class BookIsbnProcessForm extends FormBase {
    * @return int[]
    *   Ordered node IDs sorted by most recently changed first.
    */
-  protected static function collectCandidateNodeIds(array $bundle_settings, ?int $limit = NULL, bool $includeExisting = FALSE): array {
+  protected static function collectCandidateNodeIds(array $bundle_settings, ?int $limit = NULL, bool $includeExisting = FALSE, bool $sentinelsOnly = FALSE, bool $blankOrSentinel = FALSE): array {
     if (empty($bundle_settings)) {
       return [];
     }
