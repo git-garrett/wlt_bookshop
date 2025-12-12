@@ -86,20 +86,20 @@ class BookIsbnLookup {
   protected bool $skipEditionLookups = FALSE;
 
   /**
-   * Local work index path and cached mapping.
+   * Local work index path and SQLite handle.
    */
   protected ?string $workIndexPath = NULL;
 
-  /** @var array<string, string[]>|null */
-  protected ?array $workIndexMap = NULL;
+  /** @var \SQLite3|null */
+  protected $workIndexDb = NULL;
 
   /**
-   * Local edition offset index path and cached mapping.
+   * Local edition offset index path and SQLite handle.
    */
   protected ?string $editionOffsetIndexPath = NULL;
 
-  /** @var array<string, int>|null */
-  protected ?array $editionOffsetIndex = NULL;
+  /** @var \SQLite3|null */
+  protected $editionOffsetDb = NULL;
 
   /**
    * Local edition dump path and active handle.
@@ -117,6 +117,12 @@ class BookIsbnLookup {
   public function __destruct() {
     if (is_resource($this->editionDumpHandle)) {
       fclose($this->editionDumpHandle);
+    }
+    if ($this->workIndexDb instanceof \SQLite3) {
+      $this->workIndexDb->close();
+    }
+    if ($this->editionOffsetDb instanceof \SQLite3) {
+      $this->editionOffsetDb->close();
     }
   }
 
@@ -147,7 +153,10 @@ class BookIsbnLookup {
   public function setWorkIndexPath(?string $path): void {
     $path = $path !== NULL ? trim($path) : '';
     $this->workIndexPath = $path !== '' ? $path : NULL;
-    $this->workIndexMap = NULL;
+    if ($this->workIndexDb instanceof \SQLite3) {
+      $this->workIndexDb->close();
+      $this->workIndexDb = NULL;
+    }
   }
 
   /**
@@ -156,7 +165,10 @@ class BookIsbnLookup {
   public function setEditionOffsetIndexPath(?string $path): void {
     $path = $path !== NULL ? trim($path) : '';
     $this->editionOffsetIndexPath = $path !== '' ? $path : NULL;
-    $this->editionOffsetIndex = NULL;
+    if ($this->editionOffsetDb instanceof \SQLite3) {
+      $this->editionOffsetDb->close();
+      $this->editionOffsetDb = NULL;
+    }
   }
 
   /**
@@ -181,6 +193,233 @@ class BookIsbnLookup {
     $headers['User-Agent'] = self::OPEN_LIBRARY_USER_AGENT;
     $options['headers'] = $headers;
     return $options;
+  }
+
+  protected function getCacheDirectory(): string {
+    $base = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'wlt_bookshop_cache';
+    if (!is_dir($base)) {
+      @mkdir($base, 0777, TRUE);
+    }
+    return $base;
+  }
+
+  protected function getCachedIndexPath(string $type, string $sourcePath): ?string {
+    if (!is_file($sourcePath)) {
+      $this->logger->error('Index source @path is not a file.', ['@path' => $sourcePath]);
+      return NULL;
+    }
+    $real = realpath($sourcePath) ?: $sourcePath;
+    $hash = hash('sha256', implode('|', [
+      $type,
+      $real,
+      (string) @filesize($sourcePath),
+      (string) @filemtime($sourcePath),
+    ]));
+    return $this->getCacheDirectory() . DIRECTORY_SEPARATOR . $type . '_' . $hash . '.sqlite';
+  }
+
+  protected function ensureWorkIndexDb(): void {
+    if (!class_exists(\SQLite3::class)) {
+      $this->logger->error('SQLite3 extension is required for local work index support.');
+      $this->workIndexPath = NULL;
+      return;
+    }
+    if ($this->workIndexDb instanceof \SQLite3 || $this->workIndexPath === NULL) {
+      return;
+    }
+    $cachePath = $this->getCachedIndexPath('work_index', $this->workIndexPath);
+    if ($cachePath === NULL) {
+      return;
+    }
+    if (!file_exists($cachePath)) {
+      $this->buildWorkIndexDatabase($this->workIndexPath, $cachePath);
+    }
+    if (file_exists($cachePath)) {
+      $this->workIndexDb = new \SQLite3($cachePath, SQLITE3_OPEN_READONLY);
+    }
+  }
+
+  protected function ensureEditionOffsetDb(): void {
+    if (!class_exists(\SQLite3::class)) {
+      $this->logger->error('SQLite3 extension is required for local edition offset support.');
+      $this->editionOffsetIndexPath = NULL;
+      return;
+    }
+    if ($this->editionOffsetDb instanceof \SQLite3 || $this->editionOffsetIndexPath === NULL) {
+      return;
+    }
+    $cachePath = $this->getCachedIndexPath('edition_offsets', $this->editionOffsetIndexPath);
+    if ($cachePath === NULL) {
+      return;
+    }
+    if (!file_exists($cachePath)) {
+      $this->buildEditionOffsetDatabase($this->editionOffsetIndexPath, $cachePath);
+    }
+    if (file_exists($cachePath)) {
+      $this->editionOffsetDb = new \SQLite3($cachePath, SQLITE3_OPEN_READONLY);
+    }
+  }
+
+  protected function buildWorkIndexDatabase(string $sourcePath, string $destination): void {
+    $lock = $destination . '.lock';
+    $lockHandle = @fopen($lock, 'c');
+    if (is_resource($lockHandle)) {
+      flock($lockHandle, LOCK_EX);
+    }
+    try {
+      if (file_exists($destination)) {
+        return;
+      }
+      $this->logger->notice('Building work index cache at @dest from @src', [
+        '@dest' => $destination,
+        '@src' => $sourcePath,
+      ]);
+      $temp = $destination . '.tmp_' . getmypid();
+      if (file_exists($temp)) {
+        @unlink($temp);
+      }
+      $db = new \SQLite3($temp);
+      $db->exec('PRAGMA journal_mode = OFF;');
+      $db->exec('PRAGMA synchronous = OFF;');
+      $db->exec('PRAGMA temp_store = MEMORY;');
+      $db->exec('CREATE TABLE work_index (work TEXT NOT NULL, edition TEXT NOT NULL);');
+      $db->exec('CREATE INDEX work_index_work_idx ON work_index(work);');
+      $insert = $db->prepare('INSERT INTO work_index (work, edition) VALUES (:work, :edition)');
+      $handle = @fopen($sourcePath, 'rb');
+      if ($handle === FALSE) {
+        throw new \RuntimeException(sprintf('Unable to open work index source %s', $sourcePath));
+      }
+      $db->exec('BEGIN TRANSACTION');
+      $count = 0;
+      while (($line = fgets($handle)) !== FALSE) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') {
+          continue;
+        }
+        $parts = preg_split('/\s+/', $line, 2);
+        if (count($parts) < 2) {
+          continue;
+        }
+        $workKey = trim($parts[0]);
+        if ($workKey === '') {
+          continue;
+        }
+        $editionKey = $this->normalizeEditionKey($parts[1]);
+        if ($editionKey === '') {
+          continue;
+        }
+        $insert->bindValue(':work', $workKey, SQLITE3_TEXT);
+        $insert->bindValue(':edition', $editionKey, SQLITE3_TEXT);
+        $insert->execute();
+        $count++;
+        if ($count % 5000 === 0) {
+          $db->exec('COMMIT');
+          $db->exec('BEGIN TRANSACTION');
+        }
+      }
+      $db->exec('COMMIT');
+      fclose($handle);
+      $db->close();
+      if (!@rename($temp, $destination)) {
+        $this->logger->error('Failed moving work index cache into place (@temp -> @dest).', [
+          '@temp' => $temp,
+          '@dest' => $destination,
+        ]);
+        @unlink($temp);
+      }
+    }
+    catch (\Throwable $e) {
+      $this->logger->error('Failed building work index cache: @message', ['@message' => $e->getMessage()]);
+      if (isset($temp) && file_exists($temp)) {
+        @unlink($temp);
+      }
+    }
+    finally {
+      if (is_resource($lockHandle)) {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+        @unlink($lock);
+      }
+    }
+  }
+
+  protected function buildEditionOffsetDatabase(string $sourcePath, string $destination): void {
+    $lock = $destination . '.lock';
+    $lockHandle = @fopen($lock, 'c');
+    if (is_resource($lockHandle)) {
+      flock($lockHandle, LOCK_EX);
+    }
+    try {
+      if (file_exists($destination)) {
+        return;
+      }
+      $this->logger->notice('Building edition offset cache at @dest from @src', [
+        '@dest' => $destination,
+        '@src' => $sourcePath,
+      ]);
+      $temp = $destination . '.tmp_' . getmypid();
+      if (file_exists($temp)) {
+        @unlink($temp);
+      }
+      $db = new \SQLite3($temp);
+      $db->exec('PRAGMA journal_mode = OFF;');
+      $db->exec('PRAGMA synchronous = OFF;');
+      $db->exec('PRAGMA temp_store = MEMORY;');
+      $db->exec('CREATE TABLE edition_offsets (edition TEXT PRIMARY KEY, offset INTEGER NOT NULL);');
+      $insert = $db->prepare('INSERT INTO edition_offsets (edition, offset) VALUES (:edition, :offset)');
+      $handle = @fopen($sourcePath, 'rb');
+      if ($handle === FALSE) {
+        throw new \RuntimeException(sprintf('Unable to open edition offset source %s', $sourcePath));
+      }
+      $db->exec('BEGIN TRANSACTION');
+      $count = 0;
+      while (($line = fgets($handle)) !== FALSE) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') {
+          continue;
+        }
+        $parts = preg_split('/\s+/', $line, 2);
+        if (count($parts) < 2) {
+          continue;
+        }
+        $editionKey = $this->normalizeEditionKey($parts[0]);
+        if ($editionKey === '') {
+          continue;
+        }
+        $offset = (int) $parts[1];
+        $insert->bindValue(':edition', $editionKey, SQLITE3_TEXT);
+        $insert->bindValue(':offset', $offset, SQLITE3_INTEGER);
+        $insert->execute();
+        $count++;
+        if ($count % 5000 === 0) {
+          $db->exec('COMMIT');
+          $db->exec('BEGIN TRANSACTION');
+        }
+      }
+      $db->exec('COMMIT');
+      fclose($handle);
+      $db->close();
+      if (!@rename($temp, $destination)) {
+        $this->logger->error('Failed moving edition offset cache into place (@temp -> @dest).', [
+          '@temp' => $temp,
+          '@dest' => $destination,
+        ]);
+        @unlink($temp);
+      }
+    }
+    catch (\Throwable $e) {
+      $this->logger->error('Failed building edition offset cache: @message', ['@message' => $e->getMessage()]);
+      if (isset($temp) && file_exists($temp)) {
+        @unlink($temp);
+      }
+    }
+    finally {
+      if (is_resource($lockHandle)) {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+        @unlink($lock);
+      }
+    }
   }
 
   protected function hasLocalEditionData(): bool {
@@ -1538,102 +1777,55 @@ class BookIsbnLookup {
   }
 
   protected function loadWorkIndexMap(): void {
-    if ($this->workIndexMap !== NULL || $this->workIndexPath === NULL) {
-      return;
-    }
-    if (!is_readable($this->workIndexPath)) {
-      $this->logger->error('Work index path @path is not readable.', ['@path' => $this->workIndexPath]);
-      $this->workIndexPath = NULL;
-      $this->workIndexMap = NULL;
-      return;
-    }
-    $handle = @fopen($this->workIndexPath, 'rb');
-    if ($handle === FALSE) {
-      $this->logger->error('Failed opening work index path @path.', ['@path' => $this->workIndexPath]);
-      $this->workIndexPath = NULL;
-      $this->workIndexMap = NULL;
-      return;
-    }
-    $map = [];
-    while (($line = fgets($handle)) !== FALSE) {
-      $line = trim($line);
-      if ($line === '' || $line[0] === '#') {
-        continue;
-      }
-      $parts = preg_split('/\s+/', $line, 2);
-      if (count($parts) < 2) {
-        continue;
-      }
-      $workKey = trim($parts[0]);
-      if ($workKey === '') {
-        continue;
-      }
-      $editionKey = $this->normalizeEditionKey($parts[1]);
-      if ($editionKey === '') {
-        continue;
-      }
-      $map[$workKey][] = $editionKey;
-    }
-    fclose($handle);
-    $this->workIndexMap = $map;
+    $this->ensureWorkIndexDb();
   }
 
   protected function getEditionKeysForWork(string $workKey): array {
-    $this->loadWorkIndexMap();
-    if ($this->workIndexMap === NULL) {
+    $this->ensureWorkIndexDb();
+    if (!$this->workIndexDb instanceof \SQLite3) {
       return [];
     }
-    return $this->workIndexMap[$workKey] ?? [];
+    $stmt = $this->workIndexDb->prepare('SELECT edition FROM work_index WHERE work = :work');
+    $stmt->bindValue(':work', $workKey, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    if (!$result) {
+      return [];
+    }
+    $editions = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+      if (!empty($row['edition'])) {
+        $editions[] = $row['edition'];
+      }
+    }
+    $result->finalize();
+    return $editions;
   }
 
   protected function loadEditionOffsetIndex(): void {
-    if ($this->editionOffsetIndex !== NULL || $this->editionOffsetIndexPath === NULL) {
-      return;
-    }
-    if (!is_readable($this->editionOffsetIndexPath)) {
-      $this->logger->error('Edition index path @path is not readable.', ['@path' => $this->editionOffsetIndexPath]);
-      $this->editionOffsetIndexPath = NULL;
-      $this->editionOffsetIndex = NULL;
-      return;
-    }
-    $handle = @fopen($this->editionOffsetIndexPath, 'rb');
-    if ($handle === FALSE) {
-      $this->logger->error('Failed opening edition index path @path.', ['@path' => $this->editionOffsetIndexPath]);
-      $this->editionOffsetIndexPath = NULL;
-      $this->editionOffsetIndex = NULL;
-      return;
-    }
-    $map = [];
-    while (($line = fgets($handle)) !== FALSE) {
-      $line = trim($line);
-      if ($line === '' || $line[0] === '#') {
-        continue;
-      }
-      $parts = preg_split('/\s+/', $line, 2);
-      if (count($parts) < 2) {
-        continue;
-      }
-      $editionKey = $this->normalizeEditionKey($parts[0]);
-      if ($editionKey === '') {
-        continue;
-      }
-      $offset = (int) $parts[1];
-      $map[$editionKey] = $offset;
-    }
-    fclose($handle);
-    $this->editionOffsetIndex = $map;
+    $this->ensureEditionOffsetDb();
   }
 
   protected function getEditionOffset(string $editionKey): ?int {
-    $this->loadEditionOffsetIndex();
-    if ($this->editionOffsetIndex === NULL) {
+    $this->ensureEditionOffsetDb();
+    if (!$this->editionOffsetDb instanceof \SQLite3) {
       return NULL;
     }
     $normalized = $this->normalizeEditionKey($editionKey);
     if ($normalized === '') {
       return NULL;
     }
-    return $this->editionOffsetIndex[$normalized] ?? NULL;
+    $stmt = $this->editionOffsetDb->prepare('SELECT offset FROM edition_offsets WHERE edition = :edition');
+    $stmt->bindValue(':edition', $normalized, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    if (!$result) {
+      return NULL;
+    }
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+    $result->finalize();
+    if (!$row || !isset($row['offset'])) {
+      return NULL;
+    }
+    return (int) $row['offset'];
   }
 
   protected function getEditionDumpHandle() {
