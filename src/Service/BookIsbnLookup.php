@@ -423,11 +423,16 @@ class BookIsbnLookup {
   }
 
   protected function hasLocalEditionData(): bool {
-    return $this->editionDumpPath !== NULL && $this->editionOffsetIndexPath !== NULL;
+    $this->ensureEditionOffsetDb();
+    return $this->editionDumpPath !== NULL && $this->editionOffsetDb instanceof \SQLite3;
   }
 
   protected function shouldUseWorkIndex(): bool {
-    return $this->hasLocalEditionData() && $this->workIndexPath !== NULL;
+    if (!$this->hasLocalEditionData()) {
+      return FALSE;
+    }
+    $this->ensureWorkIndexDb();
+    return $this->workIndexDb instanceof \SQLite3;
   }
 
   /**
