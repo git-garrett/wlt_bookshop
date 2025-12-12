@@ -570,7 +570,7 @@ class BookIsbnLookup {
     }
 
     $query = [
-      'title' => $title,
+      'q' => 'title:' . $title,
       'limit' => 1,
     ];
 
@@ -1139,7 +1139,7 @@ class BookIsbnLookup {
       return [];
     }
     $query = [
-      'title' => $title,
+      'q' => 'title:' . $title,
       'limit' => 50,
     ];
     $url = 'https://openlibrary.org/search.json';
@@ -1860,7 +1860,7 @@ class BookIsbnLookup {
       return [];
     }
     $query = [
-      'title' => $title,
+      'q' => 'title:' . $title,
       'limit' => 50,
     ];
     $url = 'https://openlibrary.org/search.json';
