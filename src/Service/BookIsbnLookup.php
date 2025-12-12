@@ -85,9 +85,39 @@ class BookIsbnLookup {
    */
   protected bool $skipEditionLookups = FALSE;
 
+  /**
+   * Local work index path and cached mapping.
+   */
+  protected ?string $workIndexPath = NULL;
+
+  /** @var array<string, string[]>|null */
+  protected ?array $workIndexMap = NULL;
+
+  /**
+   * Local edition offset index path and cached mapping.
+   */
+  protected ?string $editionOffsetIndexPath = NULL;
+
+  /** @var array<string, int>|null */
+  protected ?array $editionOffsetIndex = NULL;
+
+  /**
+   * Local edition dump path and active handle.
+   */
+  protected ?string $editionDumpPath = NULL;
+
+  /** @var resource|null */
+  protected $editionDumpHandle = NULL;
+
   public function __construct(ClientInterface $http_client, LoggerInterface $logger) {
     $this->httpClient = $http_client;
     $this->logger = $logger;
+  }
+
+  public function __destruct() {
+    if (is_resource($this->editionDumpHandle)) {
+      fclose($this->editionDumpHandle);
+    }
   }
 
   /**
@@ -112,6 +142,37 @@ class BookIsbnLookup {
   }
 
   /**
+    * Set the local work index path.
+    */
+  public function setWorkIndexPath(?string $path): void {
+    $path = $path !== NULL ? trim($path) : '';
+    $this->workIndexPath = $path !== '' ? $path : NULL;
+    $this->workIndexMap = NULL;
+  }
+
+  /**
+   * Set the local edition offset index path.
+   */
+  public function setEditionOffsetIndexPath(?string $path): void {
+    $path = $path !== NULL ? trim($path) : '';
+    $this->editionOffsetIndexPath = $path !== '' ? $path : NULL;
+    $this->editionOffsetIndex = NULL;
+  }
+
+  /**
+   * Set the local edition dump path.
+   */
+  public function setEditionDumpPath(?string $path): void {
+    $path = $path !== NULL ? trim($path) : '';
+    $normalized = $path !== '' ? $path : NULL;
+    if ($this->editionDumpPath !== $normalized && is_resource($this->editionDumpHandle)) {
+      fclose($this->editionDumpHandle);
+      $this->editionDumpHandle = NULL;
+    }
+    $this->editionDumpPath = $normalized;
+  }
+
+  /**
    * Apply shared defaults to Open Library HTTP options.
    */
   protected function prepareOpenLibraryOptions(array $options = []): array {
@@ -120,6 +181,14 @@ class BookIsbnLookup {
     $headers['User-Agent'] = self::OPEN_LIBRARY_USER_AGENT;
     $options['headers'] = $headers;
     return $options;
+  }
+
+  protected function hasLocalEditionData(): bool {
+    return $this->editionDumpPath !== NULL && $this->editionOffsetIndexPath !== NULL;
+  }
+
+  protected function shouldUseWorkIndex(): bool {
+    return $this->hasLocalEditionData() && $this->workIndexPath !== NULL;
   }
 
   /**
@@ -411,24 +480,7 @@ class BookIsbnLookup {
     }
 
     foreach ($data['docs'] as $doc) {
-      // Build a list of candidate edition keys from cover_edition_key and edition_key.
-      $candidateKeys = [];
-      if (!empty($doc['cover_edition_key'])) {
-        $candidateKeys[] = (string) $doc['cover_edition_key'];
-      }
-      if (!empty($doc['edition_key'])) {
-        if (is_array($doc['edition_key'])) {
-          foreach ($doc['edition_key'] as $ek) {
-            $ek = (string) $ek;
-            if ($ek !== '') {
-              $candidateKeys[] = $ek;
-            }
-          }
-        }
-        elseif (is_string($doc['edition_key'])) {
-          $candidateKeys[] = $doc['edition_key'];
-        }
-      }
+      $candidateKeys = $this->extractEditionKeysFromDoc((array) $doc);
       if (empty($candidateKeys)) {
         continue;
       }
@@ -703,6 +755,7 @@ class BookIsbnLookup {
       return $results;
     }
     $useCache = !is_array($debug);
+    $useLocal = $this->hasLocalEditionData();
     $keysToFetch = [];
     $urls = [];
 
@@ -723,6 +776,31 @@ class BookIsbnLookup {
     }
 
     if (!empty($keysToFetch)) {
+      if ($useLocal) {
+        foreach ($keysToFetch as $editionKey) {
+          $payload = $this->loadEditionPayloadFromFile($editionKey);
+          if ($payload === FALSE) {
+            if ($useCache) {
+              $this->editionCache[$editionKey] = FALSE;
+            }
+            $results[$editionKey] = FALSE;
+            if (is_array($debug)) {
+              $debug['editions'][] = [
+                'edition' => $editionKey,
+                'source' => 'local',
+                'error' => 'missing_or_invalid',
+              ];
+            }
+            continue;
+          }
+          $results[$editionKey] = $payload;
+          if ($useCache) {
+            $this->editionCache[$editionKey] = $payload;
+          }
+        }
+        return $results;
+      }
+
       $promises = [];
       foreach ($keysToFetch as $editionKey) {
         $promises[$editionKey] = $this->sendOpenLibraryGetAsync($urls[$editionKey], [
@@ -865,6 +943,20 @@ class BookIsbnLookup {
     $workKey = trim($workKey);
     if ($workKey === '') {
       return;
+    }
+    if ($this->shouldUseWorkIndex()) {
+      $editionRequests = $this->getEditionKeysForWork($workKey);
+      if (!empty($editionRequests)) {
+        $payloads = $this->loadEditionPayloads($editionRequests, $debug, $loadedEditions);
+        foreach ($editionRequests as $editionKey) {
+          if (empty($payloads[$editionKey]) || !is_array($payloads[$editionKey])) {
+            continue;
+          }
+          $preferred = ($coverKey !== '' && $editionKey === $coverKey);
+          $this->processEditionPayload($editionKey, $payloads[$editionKey], $workKey, $results, $sequence, $debug, $preferred, $context);
+        }
+        return;
+      }
     }
     $url = 'https://openlibrary.org' . $workKey . '/editions.json?limit=500';
     $useCache = !is_array($debug);
@@ -1397,6 +1489,200 @@ class BookIsbnLookup {
       return $a['order'] <=> $b['order'];
     });
     return array_values($results);
+  }
+
+  /**
+   * Extract candidate edition keys from a search document.
+   */
+  protected function extractEditionKeysFromDoc(array $doc): array {
+    $keys = [];
+    if (!empty($doc['cover_edition_key'])) {
+      $keys[] = (string) $doc['cover_edition_key'];
+    }
+    if (!empty($doc['edition_key'])) {
+      if (is_array($doc['edition_key'])) {
+        foreach ($doc['edition_key'] as $editionKey) {
+          $editionKey = (string) $editionKey;
+          if ($editionKey !== '') {
+            $keys[] = $editionKey;
+          }
+        }
+      }
+      elseif (is_string($doc['edition_key'])) {
+        $keys[] = $doc['edition_key'];
+      }
+    }
+    if (empty($keys)) {
+      return [];
+    }
+    $normalized = [];
+    foreach ($keys as $key) {
+      $value = $this->normalizeEditionKey($key);
+      if ($value !== '') {
+        $normalized[$value] = TRUE;
+      }
+    }
+    return array_keys($normalized);
+  }
+
+  protected function normalizeEditionKey(string $key): string {
+    $key = trim($key);
+    if ($key === '') {
+      return '';
+    }
+    $key = ltrim($key, '/');
+    if (str_starts_with($key, 'books/')) {
+      $key = substr($key, 6);
+    }
+    return $key;
+  }
+
+  protected function loadWorkIndexMap(): void {
+    if ($this->workIndexMap !== NULL || $this->workIndexPath === NULL) {
+      return;
+    }
+    if (!is_readable($this->workIndexPath)) {
+      $this->logger->error('Work index path @path is not readable.', ['@path' => $this->workIndexPath]);
+      $this->workIndexPath = NULL;
+      $this->workIndexMap = NULL;
+      return;
+    }
+    $handle = @fopen($this->workIndexPath, 'rb');
+    if ($handle === FALSE) {
+      $this->logger->error('Failed opening work index path @path.', ['@path' => $this->workIndexPath]);
+      $this->workIndexPath = NULL;
+      $this->workIndexMap = NULL;
+      return;
+    }
+    $map = [];
+    while (($line = fgets($handle)) !== FALSE) {
+      $line = trim($line);
+      if ($line === '' || $line[0] === '#') {
+        continue;
+      }
+      $parts = preg_split('/\s+/', $line, 2);
+      if (count($parts) < 2) {
+        continue;
+      }
+      $workKey = trim($parts[0]);
+      if ($workKey === '') {
+        continue;
+      }
+      $editionKey = $this->normalizeEditionKey($parts[1]);
+      if ($editionKey === '') {
+        continue;
+      }
+      $map[$workKey][] = $editionKey;
+    }
+    fclose($handle);
+    $this->workIndexMap = $map;
+  }
+
+  protected function getEditionKeysForWork(string $workKey): array {
+    $this->loadWorkIndexMap();
+    if ($this->workIndexMap === NULL) {
+      return [];
+    }
+    return $this->workIndexMap[$workKey] ?? [];
+  }
+
+  protected function loadEditionOffsetIndex(): void {
+    if ($this->editionOffsetIndex !== NULL || $this->editionOffsetIndexPath === NULL) {
+      return;
+    }
+    if (!is_readable($this->editionOffsetIndexPath)) {
+      $this->logger->error('Edition index path @path is not readable.', ['@path' => $this->editionOffsetIndexPath]);
+      $this->editionOffsetIndexPath = NULL;
+      $this->editionOffsetIndex = NULL;
+      return;
+    }
+    $handle = @fopen($this->editionOffsetIndexPath, 'rb');
+    if ($handle === FALSE) {
+      $this->logger->error('Failed opening edition index path @path.', ['@path' => $this->editionOffsetIndexPath]);
+      $this->editionOffsetIndexPath = NULL;
+      $this->editionOffsetIndex = NULL;
+      return;
+    }
+    $map = [];
+    while (($line = fgets($handle)) !== FALSE) {
+      $line = trim($line);
+      if ($line === '' || $line[0] === '#') {
+        continue;
+      }
+      $parts = preg_split('/\s+/', $line, 2);
+      if (count($parts) < 2) {
+        continue;
+      }
+      $editionKey = $this->normalizeEditionKey($parts[0]);
+      if ($editionKey === '') {
+        continue;
+      }
+      $offset = (int) $parts[1];
+      $map[$editionKey] = $offset;
+    }
+    fclose($handle);
+    $this->editionOffsetIndex = $map;
+  }
+
+  protected function getEditionOffset(string $editionKey): ?int {
+    $this->loadEditionOffsetIndex();
+    if ($this->editionOffsetIndex === NULL) {
+      return NULL;
+    }
+    $normalized = $this->normalizeEditionKey($editionKey);
+    if ($normalized === '') {
+      return NULL;
+    }
+    return $this->editionOffsetIndex[$normalized] ?? NULL;
+  }
+
+  protected function getEditionDumpHandle() {
+    if ($this->editionDumpPath === NULL) {
+      return NULL;
+    }
+    if (!is_resource($this->editionDumpHandle)) {
+      $this->editionDumpHandle = @fopen($this->editionDumpPath, 'rb');
+      if ($this->editionDumpHandle === FALSE) {
+        $this->logger->error('Failed opening edition dump path @path.', ['@path' => $this->editionDumpPath]);
+        $this->editionDumpHandle = NULL;
+        $this->editionDumpPath = NULL;
+      }
+    }
+    return $this->editionDumpHandle;
+  }
+
+  protected function loadEditionPayloadFromFile(string $editionKey) {
+    $offset = $this->getEditionOffset($editionKey);
+    if ($offset === NULL) {
+      return FALSE;
+    }
+    $handle = $this->getEditionDumpHandle();
+    if (!is_resource($handle)) {
+      return FALSE;
+    }
+    if (fseek($handle, $offset) !== 0) {
+      $this->logger->error('Failed seeking to offset @offset for edition @edition.', [
+        '@offset' => $offset,
+        '@edition' => $editionKey,
+      ]);
+      return FALSE;
+    }
+    $line = fgets($handle);
+    if ($line === FALSE) {
+      $this->logger->error('Failed reading edition data for @edition at offset @offset.', [
+        '@edition' => $editionKey,
+        '@offset' => $offset,
+      ]);
+      return FALSE;
+    }
+    $line = rtrim($line, "\r\n");
+    $parts = explode("\t", $line, 5);
+    if (count($parts) < 5) {
+      return FALSE;
+    }
+    $json = $parts[4];
+    $payload = json_decode($json, TRUE);
+    return is_array($payload) ? $payload : FALSE;
   }
 
   /**

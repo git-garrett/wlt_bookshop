@@ -84,6 +84,24 @@ class BookIsbnProcessForm extends FormBase {
       '#description' => $this->t('Only use ISBN values returned by the initial search query and avoid calling the edition APIs.'),
       '#default_value' => FALSE,
     ];
+    $form['work_index_path'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Work index path'),
+      '#description' => $this->t('Optional path to a local work index file mapping work keys to edition keys. When provided along with the edition index and dump paths, API work lookups are skipped.'),
+      '#default_value' => '',
+    ];
+    $form['edition_index_path'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Edition index path'),
+      '#description' => $this->t('Optional path to a local edition index file that maps edition keys to byte offsets in the dump file.'),
+      '#default_value' => '',
+    ];
+    $form['edition_dump_path'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Edition dump path'),
+      '#description' => $this->t('Optional path to the local Open Library editions dump used together with the edition index path.'),
+      '#default_value' => '',
+    ];
 
     $form['actions'] = [
       '#type' => 'actions',
@@ -139,6 +157,9 @@ class BookIsbnProcessForm extends FormBase {
     $batchSize = max(1, min(500, $batchSize ?: 100));
     $replaceExisting = (bool) $form_state->getValue('replace_existing');
     $searchOnly = (bool) $form_state->getValue('search_only');
+    $workIndexPath = trim((string) $form_state->getValue('work_index_path'));
+    $editionIndexPath = trim((string) $form_state->getValue('edition_index_path'));
+    $editionDumpPath = trim((string) $form_state->getValue('edition_dump_path'));
 
     $storage = \Drupal::entityTypeManager()->getStorage('node');
     $bundle_settings = array_filter(
@@ -177,7 +198,7 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath);
       return;
     }
 
@@ -189,7 +210,7 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath);
       return;
     }
 
@@ -201,7 +222,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath);
   }
 
   /**
@@ -218,13 +239,19 @@ class BookIsbnProcessForm extends FormBase {
    *   their current values.
    * @param bool $searchOnly
    *   TRUE to skip edition lookups and use only search results.
+   * @param string $workIndexPath
+   *   Optional work index file path.
+   * @param string $editionIndexPath
+   *   Optional edition index file path.
+   * @param string $editionDumpPath
+   *   Optional edition dump file path.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly],
+        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath],
       ];
     }
 
@@ -257,10 +284,16 @@ class BookIsbnProcessForm extends FormBase {
    *   TRUE when existing ISBN values should be fully replaced.
    * @param bool $searchOnly
    *   TRUE when edition lookups should be skipped and only search results used.
+   * @param string $workIndexPath
+   *   Work index path provided by the form/CLI.
+   * @param string $editionIndexPath
+   *   Edition index path provided by the form/CLI.
+   * @param string $editionDumpPath
+   *   Edition dump path provided by the form/CLI.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -285,16 +318,33 @@ class BookIsbnProcessForm extends FormBase {
       $lookup->setVerboseLogging($apiVerbose);
     }
 
-    if (method_exists($lookup, 'setSkipEditionLookups')) {
-      $lookup->setSkipEditionLookups($searchOnly);
-    }
-
     try {
+      if (method_exists($lookup, 'setSkipEditionLookups')) {
+        $lookup->setSkipEditionLookups($searchOnly);
+      }
+      if (method_exists($lookup, 'setWorkIndexPath')) {
+        $lookup->setWorkIndexPath($workIndexPath !== '' ? $workIndexPath : NULL);
+      }
+      if (method_exists($lookup, 'setEditionOffsetIndexPath')) {
+        $lookup->setEditionOffsetIndexPath($editionIndexPath !== '' ? $editionIndexPath : NULL);
+      }
+      if (method_exists($lookup, 'setEditionDumpPath')) {
+        $lookup->setEditionDumpPath($editionDumpPath !== '' ? $editionDumpPath : NULL);
+      }
       static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting);
     }
     finally {
       if (method_exists($lookup, 'setSkipEditionLookups')) {
         $lookup->setSkipEditionLookups(FALSE);
+      }
+      if (method_exists($lookup, 'setWorkIndexPath')) {
+        $lookup->setWorkIndexPath(NULL);
+      }
+      if (method_exists($lookup, 'setEditionOffsetIndexPath')) {
+        $lookup->setEditionOffsetIndexPath(NULL);
+      }
+      if (method_exists($lookup, 'setEditionDumpPath')) {
+        $lookup->setEditionDumpPath(NULL);
       }
     }
 

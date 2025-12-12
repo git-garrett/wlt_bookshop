@@ -39,6 +39,9 @@ class WltBookshopCommands extends DrushCommands {
    * @option api-verbose Output verbose Open Library request/response logging (default FALSE).
    * @option replace-existing Reprocess nodes even if they already have ISBNs and overwrite stored values.
    * @option search-only Skip edition API lookups and only use ISBNs returned in the initial search results.
+   * @option work-index Path to a work-to-edition index file.
+   * @option edition-index Path to an edition-to-offset index file.
+   * @option edition-dump Path to the Open Library editions dump file.
    */
   public function processIsbn(array $options = [
     'nid' => NULL,
@@ -49,6 +52,9 @@ class WltBookshopCommands extends DrushCommands {
     'api-verbose' => FALSE,
     'replace-existing' => FALSE,
     'search-only' => FALSE,
+    'work-index' => '',
+    'edition-index' => '',
+    'edition-dump' => '',
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
@@ -58,6 +64,9 @@ class WltBookshopCommands extends DrushCommands {
     $apiVerbose = !empty($options['api-verbose']);
     $replaceExisting = !empty($options['replace-existing']);
     $searchOnly = !empty($options['search-only']);
+    $workIndex = isset($options['work-index']) ? (string) $options['work-index'] : '';
+    $editionIndex = isset($options['edition-index']) ? (string) $options['edition-index'] : '';
+    $editionDump = isset($options['edition-dump']) ? (string) $options['edition-dump'] : '';
 
     $values = [
       'nid' => $nid > 0 ? $nid : '',
@@ -68,6 +77,9 @@ class WltBookshopCommands extends DrushCommands {
       'api_verbose' => $apiVerbose,
       'replace_existing' => $replaceExisting,
       'search_only' => $searchOnly,
+      'work_index_path' => $workIndex,
+      'edition_index_path' => $editionIndex,
+      'edition_dump_path' => $editionDump,
     ];
 
     /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */
