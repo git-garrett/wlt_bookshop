@@ -1900,24 +1900,87 @@ class BookIsbnLookup {
       ];
     }
     $entries = [];
-    $sequence = 0;
+    $discovery = 0;
+    $docsRequiringEditions = [];
+    $fallbackPriority = $mode === 'title_work' ? -20 : -15;
+
     foreach ($data['docs'] as $doc) {
-      if (empty($doc['isbn']) || !is_array($doc['isbn'])) {
+      if (!is_array($doc)) {
         continue;
       }
-      $docTitle = isset($doc['title']) ? (string) $doc['title'] : $title;
-      foreach ($doc['isbn'] as $isbn) {
+      if (!empty($doc['isbn']) && is_array($doc['isbn'])) {
+        $docTitle = isset($doc['title']) ? (string) $doc['title'] : $title;
+        foreach ($doc['isbn'] as $isbn) {
+          $entries[] = [
+            'isbn' => (string) $isbn,
+            'source' => $mode,
+            'title' => $docTitle,
+            'work_title' => $docTitle,
+            'preferred' => TRUE,
+            'discovery' => $discovery++,
+            'fallback_priority' => $fallbackPriority,
+          ];
+        }
+        continue;
+      }
+      $docsRequiringEditions[] = $doc;
+    }
+
+    if (!$this->skipEditionLookups && !empty($docsRequiringEditions)) {
+      $loadedEditions = [];
+      $editionResults = [];
+      $sequence = 0;
+      foreach ($docsRequiringEditions as $doc) {
+        $workKey = isset($doc['key']) ? (string) $doc['key'] : '';
+        $workTitle = $this->buildEditionTitle($doc);
+        if ($workTitle === '') {
+          $workTitle = isset($doc['title']) ? (string) $doc['title'] : $title;
+        }
+        $workContext = [
+          'work_title' => $workTitle,
+        ];
+        $coverKey = '';
+        if (!empty($doc['cover_edition_key'])) {
+          $coverKey = $this->normalizeEditionKey((string) $doc['cover_edition_key']);
+        }
+        $candidateKeys = $this->extractEditionKeysFromDoc($doc);
+        $editionRequests = [];
+        foreach ($candidateKeys as $candidate) {
+          $editionRequests[] = [
+            'key' => $candidate,
+            'preferred' => ($coverKey !== '' && $candidate === $coverKey),
+          ];
+        }
+        if (!empty($editionRequests)) {
+          $orderedKeys = array_map(static fn(array $request) => $request['key'], $editionRequests);
+          $payloads = $this->loadEditionPayloads($orderedKeys, $debug, $loadedEditions);
+          foreach ($editionRequests as $request) {
+            $editionKey = $request['key'];
+            if (!isset($payloads[$editionKey]) || !is_array($payloads[$editionKey])) {
+              continue;
+            }
+            $this->processEditionPayload($editionKey, $payloads[$editionKey], $workKey, $editionResults, $sequence, $debug, $request['preferred'], $workContext);
+          }
+        }
+        if ($workKey !== '') {
+          $this->appendWorkEditionIsbns($workKey, $coverKey, $editionResults, $sequence, $debug, $loadedEditions, $workContext);
+        }
+      }
+
+      $finalized = $this->finalizeIsbnEntries($editionResults);
+      foreach ($finalized as $info) {
         $entries[] = [
-          'isbn' => (string) $isbn,
+          'isbn' => $info['isbn'],
           'source' => $mode,
-          'title' => $docTitle,
-          'work_title' => $docTitle,
-          'preferred' => TRUE,
-          'discovery' => $sequence++,
-          'fallback_priority' => $mode === 'title_work' ? -20 : -15,
+          'title' => $info['title'] ?? ($info['work_title'] ?? $title),
+          'work_title' => $info['work_title'] ?? ($info['title'] ?? $title),
+          'preferred' => !empty($info['preferred']),
+          'discovery' => $discovery++,
+          'fallback_priority' => $fallbackPriority,
         ];
       }
     }
+
     return $entries;
   }
 
