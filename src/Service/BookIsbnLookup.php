@@ -866,6 +866,9 @@ class BookIsbnLookup {
 
     if ($this->skipEditionLookups) {
       $entries = $this->buildSearchDocIsbnEntries($data['docs']);
+      if (empty($entries) && is_array($debug) && isset($debug['title_fallback'])) {
+        $entries = $this->buildSearchDocIsbnEntries($debug['title_fallback']['docs'] ?? []);
+      }
       if (is_array($debug)) {
         $debug['search_only'] = TRUE;
         $debug['found_isbns'] = array_map(static fn(array $entry) => $entry['isbn'], $entries);
@@ -1125,6 +1128,70 @@ class BookIsbnLookup {
     }
 
     return $results;
+  }
+
+  /**
+   * Retrieve ISBN entries by searching with a work/title query.
+   */
+  protected function collectIsbnEntriesByTitle(string $title, ?array &$debug = NULL): array {
+    $title = trim($title);
+    if ($title === '') {
+      return [];
+    }
+    $query = [
+      'title' => $title,
+      'limit' => 50,
+    ];
+    $url = 'https://openlibrary.org/search.json';
+    try {
+      $response = $this->sendOpenLibraryGet($url, [
+        'query' => $query,
+        'timeout' => 8,
+        'connect_timeout' => 4,
+      ], 'title fallback search', 'search');
+    }
+    catch (OpenLibraryApiException $e) {
+      throw $e;
+    }
+    catch (\Throwable $e) {
+      $this->logger->warning('Open Library title search failed for \"@title\": @message', [
+        '@title' => $title,
+        '@message' => $e->getMessage(),
+      ]);
+      return [];
+    }
+    if ($response->getStatusCode() !== 200) {
+      $this->logger->warning('Open Library title search non-200 (@code) for \"@title\".', [
+        '@code' => $response->getStatusCode(),
+        '@title' => $title,
+      ]);
+      return [];
+    }
+    $data = json_decode((string) $response->getBody(), TRUE);
+    if (!is_array($data) || empty($data['docs'])) {
+      return [];
+    }
+    if (is_array($debug)) {
+      $debug['title_fallback'] = [
+        'title' => $title,
+        'docs' => $data['docs'],
+      ];
+    }
+    $entries = $this->buildSearchDocIsbnEntries($data['docs']);
+    return $this->finalizeIsbnEntries(array_map(static function ($isbn) use ($title) {
+      return [
+        'isbn' => $isbn,
+        'score' => 5,
+        'langScore' => 5,
+        'countryScore' => 5,
+        'order' => 0,
+        'preferred' => TRUE,
+        'format' => 'title-match',
+        'work' => '_title_fallback',
+        'title' => $title,
+        'work_title' => $title,
+      ];
+    }, array_map(static fn(array $entry) => $entry['isbn'], $entries)));
   }
 
   /**
@@ -1733,6 +1800,125 @@ class BookIsbnLookup {
       return $a['order'] <=> $b['order'];
     });
     return array_values($results);
+  }
+
+  /**
+   * Split a title with a trailing "by …" segment into work/byline parts.
+   */
+  protected function splitTitleByline(string $title): array {
+    $title = trim($title);
+    if ($title === '') {
+      return ['work' => '', 'byline' => ''];
+    }
+    $lower = mb_strtolower($title);
+    $pos = mb_strripos($lower, ' by ');
+    if ($pos === FALSE) {
+      return ['work' => '', 'byline' => ''];
+    }
+    $work = trim(mb_substr($title, 0, $pos));
+    $byline = trim(mb_substr($title, $pos + 4));
+    return [
+      'work' => $work,
+      'byline' => $byline,
+    ];
+  }
+
+  /**
+   * Attempt to find ISBN entries using title-based heuristics.
+   */
+  public function getTitleFallbackEntries(string $title, ?array &$debug = NULL): array {
+    $title = trim($title);
+    if ($title === '') {
+      return [];
+    }
+    $parts = $this->splitTitleByline($title);
+    if ($parts['byline'] !== '') {
+      $entries = $this->getIsbnEntriesByAuthor($parts['byline'], $debug);
+      if (!empty($entries)) {
+        foreach ($entries as &$entry) {
+          $entry['fallback_priority'] = -5;
+        }
+        unset($entry);
+        return $entries;
+      }
+    }
+    if ($parts['work'] !== '') {
+      $entries = $this->collectTitleMatchEntries($parts['work'], 'title_work', $debug);
+      if (!empty($entries)) {
+        return $entries;
+      }
+    }
+    return $this->collectTitleMatchEntries($title, 'title_full', $debug);
+  }
+
+  /**
+   * Collect entries by searching Open Library for a title string.
+   */
+  protected function collectTitleMatchEntries(string $title, string $mode, ?array &$debug = NULL): array {
+    $title = trim($title);
+    if ($title === '') {
+      return [];
+    }
+    $query = [
+      'title' => $title,
+      'limit' => 50,
+    ];
+    $url = 'https://openlibrary.org/search.json';
+    try {
+      $response = $this->sendOpenLibraryGet($url, [
+        'query' => $query,
+        'timeout' => 8,
+        'connect_timeout' => 4,
+      ], 'title fallback search', 'search');
+    }
+    catch (OpenLibraryApiException $e) {
+      throw $e;
+    }
+    catch (\Throwable $e) {
+      $this->logger->warning('Open Library title search failed for \"@title\": @message', [
+        '@title' => $title,
+        '@message' => $e->getMessage(),
+      ]);
+      return [];
+    }
+    if ($response->getStatusCode() !== 200) {
+      $this->logger->warning('Open Library title search non-200 (@code) for \"@title\".', [
+        '@code' => $response->getStatusCode(),
+        '@title' => $title,
+      ]);
+      return [];
+    }
+    $data = json_decode((string) $response->getBody(), TRUE);
+    if (!is_array($data) || empty($data['docs']) || !is_array($data['docs'])) {
+      return [];
+    }
+    if (is_array($debug)) {
+      $debug['title_query'][] = [
+        'mode' => $mode,
+        'title' => $title,
+        'num_docs' => isset($data['numFound']) ? (int) $data['numFound'] : count($data['docs']),
+      ];
+    }
+    $entries = [];
+    $sequence = 0;
+    foreach ($data['docs'] as $doc) {
+      if (empty($doc['isbn']) || !is_array($doc['isbn'])) {
+        continue;
+      }
+      $docTitle = isset($doc['title']) ? (string) $doc['title'] : $title;
+      foreach ($doc['isbn'] as $isbn) {
+        $entries[] = [
+          'isbn' => (string) $isbn,
+          'source' => $mode,
+          'title' => $docTitle,
+          'work_title' => $docTitle,
+          'preferred' => TRUE,
+          'discovery' => $sequence++,
+          'fallback_priority' => $mode === 'title_work' ? -20 : -15,
+        ];
+      }
+    }
+    return $entries;
   }
 
   /**

@@ -90,6 +90,9 @@ function wlt_bookshop_entity_presave(EntityInterface $entity): void {
   }
 
   if (empty($collected)) {
+    wlt_bookshop_collect_title_fallback_isbns($lookup, $entity, $collected, $debugPlaceholder, $sequence);
+  }
+  if (empty($collected)) {
     wlt_bookshop_store_no_isbn($entity, $isbn_field);
     return;
   }
@@ -355,6 +358,47 @@ function wlt_bookshop_collect_isbns_for_names(\Drupal\wlt_bookshop\Service\BookI
 }
 
 /**
+ * Attempt fallback ISBN collection using title heuristics.
+ */
+function wlt_bookshop_collect_title_fallback_isbns(\Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup, NodeInterface $node, array &$collected, ?array &$debug = NULL, int &$sequence = 0): bool {
+  if (!method_exists($lookup, 'getTitleFallbackEntries')) {
+    return FALSE;
+  }
+  $title = wlt_bookshop_get_configured_title_text($node);
+  if ($title === '') {
+    $title = wlt_bookshop_sanitize_text((string) $node->label());
+  }
+  if ($title === '') {
+    return FALSE;
+  }
+  $entries = $lookup->getTitleFallbackEntries($title, $debug);
+  if (empty($entries)) {
+    return FALSE;
+  }
+  $added = FALSE;
+  foreach ($entries as $entry) {
+    $normalized = wlt_bookshop_normalize_isbn((string) ($entry['isbn'] ?? ''));
+    if (!$normalized || isset($collected[$normalized])) {
+      continue;
+    }
+    $collected[$normalized] = [
+      'isbn' => $normalized,
+      'source' => $entry['source'] ?? 'title_fallback',
+      'preferred' => !empty($entry['preferred']),
+      'title' => $entry['title'] ?? $title,
+      'work_title' => $entry['work_title'] ?? $title,
+      'discovery' => $sequence++,
+      'fallback_priority' => isset($entry['fallback_priority']) ? (int) $entry['fallback_priority'] : -10,
+    ];
+    $added = TRUE;
+    if (count($collected) >= $limit) {
+      break;
+    }
+  }
+  return $added;
+}
+
+/**
  * Extract the rendered body field text for substring comparisons.
  */
 function wlt_bookshop_extract_body_text(NodeInterface $node): string {
@@ -422,6 +466,9 @@ function wlt_bookshop_rank_isbn_entries(NodeInterface $node, array $entries): ar
     }
     if (!empty($entry['preferred'])) {
       $rank = min($rank, 3);
+    }
+    if (isset($entry['fallback_priority'])) {
+      $rank = min($rank, (int) $entry['fallback_priority']);
     }
     if (($entry['source'] ?? '') === 'translator') {
       $rank += 10;

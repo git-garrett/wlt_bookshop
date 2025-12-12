@@ -170,6 +170,12 @@ class BookIsbnProcessForm extends FormBase {
     $replaceExisting = (bool) $form_state->getValue('replace_existing');
     $replaceSentinelsOnly = (bool) $form_state->getValue('replace_sentinels_only');
     $replaceBlankOrSentinel = (bool) $form_state->getValue('replace_blank_or_sentinel');
+    $titleFallbackSentinels = (bool) $form_state->getValue('title_fallback_sentinels');
+    if ($titleFallbackSentinels) {
+      $replaceSentinelsOnly = TRUE;
+    }
+    $replaceSentinelsOnly = (bool) $form_state->getValue('replace_sentinels_only');
+    $replaceBlankOrSentinel = (bool) $form_state->getValue('replace_blank_or_sentinel');
     $searchOnly = (bool) $form_state->getValue('search_only');
     $workIndexPath = trim((string) $form_state->getValue('work_index_path'));
     $editionIndexPath = trim((string) $form_state->getValue('edition_index_path'));
@@ -217,7 +223,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     if ($processAll) {
-      $all_nids = static::collectCandidateNodeIds($bundle_settings, NULL, $replaceExisting);
+      $all_nids = static::collectCandidateNodeIds($bundle_settings, NULL, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel);
       if (empty($all_nids)) {
         $this->messenger()->addStatus($this->t('No nodes require processing.'));
         return;
@@ -551,6 +557,14 @@ class BookIsbnProcessForm extends FormBase {
         }
       }
 
+      if (empty($found) && method_exists($lookup, 'getTitleFallbackEntries')) {
+        $fallbackAdded = \wlt_bookshop_collect_title_fallback_isbns($lookup, $node, $found, $debugInfo, $sequenceIds);
+        if ($fallbackAdded && $context['results']['current_node']['contributor'] === '') {
+          $context['results']['current_node']['contributor'] = $title !== '' ? $title : $node->label();
+          $context['results']['current_node']['contributor_type'] = 'title_fallback';
+        }
+      }
+
       $items = NULL;
       if (!empty($found)) {
         $existing_items = $node->get($isbn_field)->getValue();
@@ -669,7 +683,13 @@ class BookIsbnProcessForm extends FormBase {
         ->accessCheck(FALSE)
         ->condition('type', $bundle)
         ->sort('changed', 'DESC');
-      if (!$includeExisting) {
+      if ($sentinelsOnly) {
+        // No condition here; we'll filter after loading IDs.
+      }
+      elseif ($blankOrSentinel) {
+        // Allow blank or sentinel; handled during filtering to avoid query complexity.
+      }
+      elseif (!$includeExisting) {
         $query->notExists($isbn_field);
       }
       $group = $query->orConditionGroup()
@@ -759,6 +779,9 @@ class BookIsbnProcessForm extends FormBase {
         }
       }
       $ids = $query->execute();
+      if (($sentinelsOnly || $blankOrSentinel) && !empty($ids)) {
+        $ids = static::filterIdsBySentinelState($ids, $isbn_field, $sentinelsOnly, $blankOrSentinel);
+      }
       if ($kill_field !== '' && !empty($ids)) {
         $kill_enabled = \Drupal::entityQuery('node')
           ->accessCheck(FALSE)
@@ -891,6 +914,42 @@ class BookIsbnProcessForm extends FormBase {
       ]);
     }
     return $ordered;
+  }
+
+  /**
+   * Filter node IDs based on sentinel requirements.
+   */
+  protected static function filterIdsBySentinelState(array $ids, string $isbn_field, bool $sentinelsOnly, bool $blankOrSentinel): array {
+    if (empty($ids)) {
+      return [];
+    }
+    $storage = \Drupal::entityTypeManager()->getStorage('node');
+    /** @var \Drupal\node\NodeInterface[] $nodes */
+    $nodes = $storage->loadMultiple($ids);
+    $filtered = [];
+    foreach ($nodes as $node) {
+      if (!$node instanceof NodeInterface || !$node->hasField($isbn_field)) {
+        continue;
+      }
+      $field = $node->get($isbn_field);
+      $isEmpty = $field->isEmpty();
+      $hasSentinel = FALSE;
+      if (!$isEmpty) {
+        foreach ($field as $item) {
+          if (isset($item->value) && (string) $item->value === WLT_BOOKSHOP_NO_ISBN_SENTINEL) {
+            $hasSentinel = TRUE;
+            break;
+          }
+        }
+      }
+      if ($sentinelsOnly && $hasSentinel) {
+        $filtered[] = (int) $node->id();
+      }
+      elseif ($blankOrSentinel && ($isEmpty || $hasSentinel)) {
+        $filtered[] = (int) $node->id();
+      }
+    }
+    return $filtered;
   }
 
   /**

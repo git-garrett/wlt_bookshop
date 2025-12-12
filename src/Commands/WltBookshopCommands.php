@@ -42,6 +42,9 @@ class WltBookshopCommands extends DrushCommands {
    * @option work-index Path to a work-to-edition index file.
    * @option edition-index Path to an edition-to-offset index file.
    * @option edition-dump Path to the Open Library editions dump file.
+   * @option replace-sentinels-only Only process nodes currently set to the sentinel value.
+   * @option replace-blank-or-sentinel Process nodes where ISBN is empty or sentinel.
+   * @option title-fallback-sentinels Reprocess sentinel nodes using title fallback heuristics.
    */
   public function processIsbn(array $options = [
     'nid' => NULL,
@@ -55,6 +58,9 @@ class WltBookshopCommands extends DrushCommands {
     'work-index' => '',
     'edition-index' => '',
     'edition-dump' => '',
+    'replace-sentinels-only' => FALSE,
+    'replace-blank-or-sentinel' => FALSE,
+    'title-fallback-sentinels' => FALSE,
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
@@ -67,6 +73,12 @@ class WltBookshopCommands extends DrushCommands {
     $workIndex = isset($options['work-index']) ? (string) $options['work-index'] : '';
     $editionIndex = isset($options['edition-index']) ? (string) $options['edition-index'] : '';
     $editionDump = isset($options['edition-dump']) ? (string) $options['edition-dump'] : '';
+    $replaceSentinelsOnly = !empty($options['replace-sentinels-only']);
+    $replaceBlankOrSentinel = !empty($options['replace-blank-or-sentinel']);
+    $titleFallbackSentinels = !empty($options['title-fallback-sentinels']);
+    if ($titleFallbackSentinels) {
+      $replaceSentinelsOnly = TRUE;
+    }
 
     $values = [
       'nid' => $nid > 0 ? $nid : '',
@@ -76,6 +88,9 @@ class WltBookshopCommands extends DrushCommands {
       'debug' => $debug,
       'api_verbose' => $apiVerbose,
       'replace_existing' => $replaceExisting,
+      'replace_sentinels_only' => $replaceSentinelsOnly,
+      'replace_blank_or_sentinel' => $replaceBlankOrSentinel,
+      'title_fallback_sentinels' => $titleFallbackSentinels,
       'search_only' => $searchOnly,
       'work_index_path' => $workIndex,
       'edition_index_path' => $editionIndex,
