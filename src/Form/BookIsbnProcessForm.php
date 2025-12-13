@@ -646,7 +646,13 @@ class BookIsbnProcessForm extends FormBase {
         $coverLinkIsbn = NULL;
         if ($titleCoverLink) {
           if ($coverLinkTriggered && !empty($orderedNew)) {
-            wlt_bookshop_store_cover_link_target((int) $node->id(), $orderedNew[0]);
+            $firstIsbn = $orderedNew[0] ?? NULL;
+            if ($firstIsbn !== NULL) {
+              wlt_bookshop_store_cover_link_target((int) $node->id(), $firstIsbn);
+            }
+            else {
+              wlt_bookshop_store_cover_link_target((int) $node->id(), NULL);
+            }
           }
           else {
             wlt_bookshop_store_cover_link_target((int) $node->id(), NULL);
