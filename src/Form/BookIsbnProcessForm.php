@@ -2,6 +2,7 @@
 
 namespace Drupal\wlt_bookshop\Form;
 
+use Drupal\Component\Utility\Html;
 use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Logger\LoggerChannelInterface;
@@ -70,6 +71,12 @@ class BookIsbnProcessForm extends FormBase {
       '#type' => 'checkbox',
       '#title' => $this->t('Show debug details'),
       '#description' => $this->t('Display author, API queries, responses summary, and stored values.'),
+      '#default_value' => FALSE,
+    ];
+    $form['trace_lookup'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Stream lookup trace to CLI'),
+      '#description' => $this->t('When running via Drush, output every API/index/dump lookup to the terminal for real-time tracing.'),
       '#default_value' => FALSE,
     ];
     $form['replace_existing'] = [
@@ -163,6 +170,7 @@ class BookIsbnProcessForm extends FormBase {
     $limit = max(1, min(500, $limit));
     $specific_nid = (int) $form_state->getValue('nid');
     $debugEnabled = (bool) $form_state->getValue('debug');
+    $traceLookup = (bool) $form_state->getValue('trace_lookup');
     $apiVerbose = (bool) $form_state->getValue('api_verbose');
     $processAll = (bool) $form_state->getValue('process_all');
     $batchSize = (int) $form_state->getValue('batch_size');
@@ -218,7 +226,7 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
       return;
     }
 
@@ -230,7 +238,7 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
       return;
     }
 
@@ -242,7 +250,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
   }
 
   /**
@@ -265,13 +273,15 @@ class BookIsbnProcessForm extends FormBase {
    *   Optional edition index file path.
    * @param string $editionDumpPath
    *   Optional edition dump file path.
+   * @param bool $traceLookup
+   *   TRUE to stream detailed lookup traces to the CLI.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, bool $traceLookup): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel],
+        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup],
       ];
     }
 
@@ -314,10 +324,12 @@ class BookIsbnProcessForm extends FormBase {
    *   TRUE to restrict replacements to sentinel values.
    * @param bool $replaceBlankOrSentinel
    *   TRUE to replace values when blank or sentinel.
+   * @param bool $traceLookup
+   *   TRUE to output lookup traces during processing.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, bool $traceLookup, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -355,7 +367,7 @@ class BookIsbnProcessForm extends FormBase {
       if (method_exists($lookup, 'setEditionDumpPath')) {
         $lookup->setEditionDumpPath($editionDumpPath !== '' ? $editionDumpPath : NULL);
       }
-      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel);
+      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
     }
     finally {
       if (method_exists($lookup, 'setSkipEditionLookups')) {
@@ -477,8 +489,10 @@ class BookIsbnProcessForm extends FormBase {
    * @param bool $replaceExisting
    *   TRUE when existing ISBN values should be overwritten if new results are
    *   found.
+   * @param bool $traceLookup
+   *   TRUE when the lookup trace should be printed to the terminal.
    */
-  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE, bool $replaceSentinelsOnly = FALSE, bool $replaceBlankOrSentinel = FALSE): void {
+  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE, bool $replaceSentinelsOnly = FALSE, bool $replaceBlankOrSentinel = FALSE, bool $traceLookup = FALSE): void {
     foreach ($nodes as $node) {
       $stats['checked']++;
       if (!$node instanceof NodeInterface) {
@@ -513,7 +527,8 @@ class BookIsbnProcessForm extends FormBase {
 
       $found = [];
       $sequenceIds = 0;
-      $debugInfo = $debugEnabled ? [] : NULL;
+      $shouldCollectDebug = $debugEnabled || $traceLookup;
+      $debugInfo = $shouldCollectDebug ? [] : NULL;
 
       $addedFromTitle = FALSE;
       if (!empty($title_authors)) {
@@ -632,7 +647,7 @@ class BookIsbnProcessForm extends FormBase {
         }
       }
 
-      if ($debugEnabled) {
+      if ($shouldCollectDebug) {
         $savedIsbns = [];
         if (isset($items)) {
           foreach ((array) $items as $item) {
@@ -641,7 +656,13 @@ class BookIsbnProcessForm extends FormBase {
             }
           }
         }
-        $debugCombined .= static::formatDebugSummary($node->id(), $title, $title_authors, $authors, $translators, is_array($debugInfo) ? $debugInfo : [], $savedIsbns) . "\n\n";
+        $summary = static::formatDebugSummary($node->id(), $title, $title_authors, $authors, $translators, is_array($debugInfo) ? $debugInfo : [], $savedIsbns);
+        if ($debugEnabled) {
+          $debugCombined .= $summary . "\n\n";
+        }
+        if ($traceLookup) {
+          static::outputTraceSummary($summary);
+        }
       }
     }
   }
@@ -1051,6 +1072,21 @@ class BookIsbnProcessForm extends FormBase {
       $parts[] = $key . ': ' . $stats[$key];
     }
     return implode(', ', $parts);
+  }
+
+  /**
+   * Output a lookup trace summary to the active terminal.
+   */
+  protected static function outputTraceSummary(string $summary): void {
+    $separator = str_repeat('-', 60);
+    $payload = $separator . PHP_EOL . $summary . PHP_EOL . $separator . PHP_EOL;
+    if (PHP_SAPI === 'cli') {
+      // phpcs:ignore DrupalPractice.General.AccessGlobals.Sysprint
+      print $payload;
+    }
+    else {
+      \Drupal::messenger()->addStatus(nl2br(Html::escape($summary)));
+    }
   }
 
   /**

@@ -45,6 +45,7 @@ class WltBookshopCommands extends DrushCommands {
    * @option replace-sentinels-only Only process nodes currently set to the sentinel value.
    * @option replace-blank-or-sentinel Process nodes where ISBN is empty or sentinel.
    * @option title-fallback-sentinels Reprocess sentinel nodes using title fallback heuristics.
+   * @option trace-lookup Output per-node lookup trace details to the terminal.
    */
   public function processIsbn(array $options = [
     'nid' => NULL,
@@ -60,7 +61,8 @@ class WltBookshopCommands extends DrushCommands {
     'edition-dump' => '',
     'replace-sentinels-only' => FALSE,
     'replace-blank-or-sentinel' => FALSE,
-    'title-fallback-sentinels' => FALSE,
+   'title-fallback-sentinels' => FALSE,
+    'trace-lookup' => FALSE,
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
@@ -76,6 +78,7 @@ class WltBookshopCommands extends DrushCommands {
     $replaceSentinelsOnly = !empty($options['replace-sentinels-only']);
     $replaceBlankOrSentinel = !empty($options['replace-blank-or-sentinel']);
     $titleFallbackSentinels = !empty($options['title-fallback-sentinels']);
+    $traceLookup = !empty($options['trace-lookup']);
     if ($titleFallbackSentinels) {
       $replaceSentinelsOnly = TRUE;
     }
@@ -95,6 +98,7 @@ class WltBookshopCommands extends DrushCommands {
       'work_index_path' => $workIndex,
       'edition_index_path' => $editionIndex,
       'edition_dump_path' => $editionDump,
+      'trace_lookup' => $traceLookup,
     ];
 
     /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */
