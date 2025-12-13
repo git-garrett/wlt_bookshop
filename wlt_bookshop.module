@@ -368,34 +368,81 @@ function wlt_bookshop_collect_title_fallback_isbns(\Drupal\wlt_bookshop\Service\
   if ($title === '') {
     $title = wlt_bookshop_sanitize_text((string) $node->label());
   }
-  if ($title === '') {
-    return FALSE;
+  $batches = [];
+  $richTitle = wlt_bookshop_extract_rich_title_emphasis($node);
+  if ($richTitle !== NULL) {
+    $richEntries = $lookup->getTitleFallbackEntries($richTitle, $debug);
+    if (!empty($richEntries)) {
+      foreach ($richEntries as &$entry) {
+        $entry['source'] = $entry['source'] ?? 'title_richtitle';
+        $entry['title'] = $entry['title'] ?? $richTitle;
+        $entry['work_title'] = $entry['work_title'] ?? $richTitle;
+        $entry['fallback_priority'] = isset($entry['fallback_priority'])
+          ? min((int) $entry['fallback_priority'], -25)
+          : -25;
+      }
+      unset($entry);
+      $batches[] = $richEntries;
+    }
   }
-  $entries = $lookup->getTitleFallbackEntries($title, $debug);
-  if (empty($entries)) {
+  if ($title !== '') {
+    $entries = $lookup->getTitleFallbackEntries($title, $debug);
+    if (!empty($entries)) {
+      $batches[] = $entries;
+    }
+  }
+  if (empty($batches)) {
     return FALSE;
   }
   $added = FALSE;
-  foreach ($entries as $entry) {
-    $normalized = wlt_bookshop_normalize_isbn((string) ($entry['isbn'] ?? ''));
-    if (!$normalized || isset($collected[$normalized])) {
-      continue;
-    }
-    $collected[$normalized] = [
-      'isbn' => $normalized,
-      'source' => $entry['source'] ?? 'title_fallback',
-      'preferred' => !empty($entry['preferred']),
-      'title' => $entry['title'] ?? $title,
-      'work_title' => $entry['work_title'] ?? $title,
-      'discovery' => $sequence++,
-      'fallback_priority' => isset($entry['fallback_priority']) ? (int) $entry['fallback_priority'] : -10,
-    ];
-    $added = TRUE;
-    if (count($collected) >= $limit) {
-      break;
+  foreach ($batches as $entries) {
+    foreach ($entries as $entry) {
+      $normalized = wlt_bookshop_normalize_isbn((string) ($entry['isbn'] ?? ''));
+      if (!$normalized || isset($collected[$normalized])) {
+        continue;
+      }
+      $collected[$normalized] = [
+        'isbn' => $normalized,
+        'source' => $entry['source'] ?? 'title_fallback',
+        'preferred' => !empty($entry['preferred']),
+        'title' => $entry['title'] ?? $title,
+        'work_title' => $entry['work_title'] ?? $title,
+        'discovery' => $sequence++,
+        'fallback_priority' => isset($entry['fallback_priority']) ? (int) $entry['fallback_priority'] : -10,
+      ];
+      $added = TRUE;
     }
   }
   return $added;
+}
+
+/**
+ * Extract the first emphasized (<em>) string from field_richtitle.
+ */
+function wlt_bookshop_extract_rich_title_emphasis(NodeInterface $node): ?string {
+  if (!$node->hasField('field_richtitle') || $node->get('field_richtitle')->isEmpty()) {
+    return NULL;
+  }
+  foreach ($node->get('field_richtitle') as $item) {
+    $raw = '';
+    if (isset($item->value)) {
+      $raw = (string) $item->value;
+    }
+    elseif (is_array($item->getValue()) && isset($item->getValue()['value'])) {
+      $raw = (string) $item->getValue()['value'];
+    }
+    if ($raw === '') {
+      continue;
+    }
+    if (preg_match('/<em[^>]*>(.*?)<\/em>/is', $raw, $matches) && isset($matches[1])) {
+      $text = strip_tags(html_entity_decode($matches[1], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+      $text = wlt_bookshop_sanitize_text($text);
+      if ($text !== '') {
+        return $text;
+      }
+    }
+  }
+  return NULL;
 }
 
 /**
