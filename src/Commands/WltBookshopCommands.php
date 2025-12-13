@@ -45,6 +45,7 @@ class WltBookshopCommands extends DrushCommands {
    * @option replace-sentinels-only Only process nodes currently set to the sentinel value.
    * @option replace-blank-or-sentinel Process nodes where ISBN is empty or sentinel.
    * @option title-fallback-sentinels Reprocess sentinel nodes using title fallback heuristics.
+   * @option title-cover-link Restrict to book reviews and run aggressive title matching + cover linking.
    * @option trace-lookup Output per-node lookup trace details to the terminal.
    */
   public function processIsbn(array $options = [
@@ -60,9 +61,10 @@ class WltBookshopCommands extends DrushCommands {
     'edition-index' => '',
     'edition-dump' => '',
     'replace-sentinels-only' => FALSE,
-    'replace-blank-or-sentinel' => FALSE,
+   'replace-blank-or-sentinel' => FALSE,
    'title-fallback-sentinels' => FALSE,
-    'trace-lookup' => FALSE,
+   'title-cover-link' => FALSE,
+   'trace-lookup' => FALSE,
   ]): void {
     $nid = isset($options['nid']) ? (int) $options['nid'] : 0;
     $limit = max(1, min(500, (int) ($options['limit'] ?? 25)));
@@ -76,12 +78,13 @@ class WltBookshopCommands extends DrushCommands {
     $editionIndex = isset($options['edition-index']) ? (string) $options['edition-index'] : '';
     $editionDump = isset($options['edition-dump']) ? (string) $options['edition-dump'] : '';
     $replaceSentinelsOnly = !empty($options['replace-sentinels-only']);
-    $replaceBlankOrSentinel = !empty($options['replace-blank-or-sentinel']);
-    $titleFallbackSentinels = !empty($options['title-fallback-sentinels']);
-    $traceLookup = !empty($options['trace-lookup']);
-    if ($titleFallbackSentinels) {
-      $replaceSentinelsOnly = TRUE;
-    }
+   $replaceBlankOrSentinel = !empty($options['replace-blank-or-sentinel']);
+   $titleFallbackSentinels = !empty($options['title-fallback-sentinels']);
+   $titleCoverLink = !empty($options['title-cover-link']);
+   $traceLookup = !empty($options['trace-lookup']);
+   if ($titleFallbackSentinels) {
+     $replaceSentinelsOnly = TRUE;
+   }
 
     $values = [
       'nid' => $nid > 0 ? $nid : '',
@@ -94,12 +97,13 @@ class WltBookshopCommands extends DrushCommands {
       'replace_sentinels_only' => $replaceSentinelsOnly,
       'replace_blank_or_sentinel' => $replaceBlankOrSentinel,
       'title_fallback_sentinels' => $titleFallbackSentinels,
-      'search_only' => $searchOnly,
-      'work_index_path' => $workIndex,
-      'edition_index_path' => $editionIndex,
-      'edition_dump_path' => $editionDump,
-      'trace_lookup' => $traceLookup,
-    ];
+     'search_only' => $searchOnly,
+     'work_index_path' => $workIndex,
+     'edition_index_path' => $editionIndex,
+     'edition_dump_path' => $editionDump,
+     'title_cover_link' => $titleCoverLink,
+     'trace_lookup' => $traceLookup,
+   ];
 
     /** @var \Drupal\wlt_bookshop\Form\BookIsbnProcessForm $form_object */
     $form_object = $this->classResolver->getInstanceFromDefinition(BookIsbnProcessForm::class);

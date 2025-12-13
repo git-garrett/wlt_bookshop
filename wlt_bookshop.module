@@ -446,6 +446,265 @@ function wlt_bookshop_extract_rich_title_emphasis(NodeInterface $node): ?string 
 }
 
 /**
+ * Collect ISBNs using extended title matching for cover linking.
+ */
+function wlt_bookshop_collect_cover_link_isbns(\Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup, NodeInterface $node, array &$collected, ?array &$debug = NULL, int &$sequence = 0): bool {
+  if (!method_exists($lookup, 'getTitleFallbackEntries')) {
+    return FALSE;
+  }
+  $candidates = wlt_bookshop_build_cover_title_candidates($node);
+  if (empty($candidates)) {
+    return FALSE;
+  }
+  $matched = FALSE;
+  foreach ($candidates as $candidate) {
+    $entries = $lookup->getTitleFallbackEntries($candidate, $debug);
+    if (empty($entries)) {
+      continue;
+    }
+    $matched = TRUE;
+    foreach ($entries as &$entry) {
+      $entry['source'] = $entry['source'] ?? 'title_cover';
+      $entry['title'] = $entry['title'] ?? $candidate;
+      $entry['work_title'] = $entry['work_title'] ?? $candidate;
+      $entry['fallback_priority'] = isset($entry['fallback_priority'])
+        ? min((int) $entry['fallback_priority'], -30)
+        : -30;
+    }
+    unset($entry);
+    foreach ($entries as $entry) {
+      $normalized = wlt_bookshop_normalize_isbn((string) ($entry['isbn'] ?? ''));
+      if (!$normalized) {
+        continue;
+      }
+      $priority = isset($entry['fallback_priority']) ? (int) $entry['fallback_priority'] : -30;
+      if (isset($collected[$normalized])) {
+        $collected[$normalized]['fallback_priority'] = min($collected[$normalized]['fallback_priority'] ?? 0, $priority);
+        $collected[$normalized]['source'] = $entry['source'] ?? $collected[$normalized]['source'] ?? 'title_cover';
+        $collected[$normalized]['title'] = $entry['title'] ?? $collected[$normalized]['title'] ?? $candidate;
+        $collected[$normalized]['work_title'] = $entry['work_title'] ?? $collected[$normalized]['work_title'] ?? $candidate;
+        continue;
+      }
+      $collected[$normalized] = [
+        'isbn' => $normalized,
+        'source' => $entry['source'] ?? 'title_cover',
+        'preferred' => !empty($entry['preferred']),
+        'title' => $entry['title'] ?? $candidate,
+        'work_title' => $entry['work_title'] ?? $candidate,
+        'discovery' => $sequence++,
+        'fallback_priority' => $priority,
+      ];
+    }
+  }
+  return $matched;
+}
+
+/**
+ * Gather relevant title strings for cover-link matching.
+ */
+function wlt_bookshop_build_cover_title_candidates(NodeInterface $node): array {
+  $sources = wlt_bookshop_collect_title_source_texts($node);
+  if (empty($sources)) {
+    return [];
+  }
+  $candidates = [];
+  foreach ($sources as $raw) {
+    $plain = wlt_bookshop_sanitize_text($raw);
+    if ($plain !== '') {
+      $candidates[$plain] = TRUE;
+      $pre = wlt_bookshop_extract_title_work_segment($plain);
+      if ($pre !== '' && $pre !== $plain) {
+        $candidates[$pre] = TRUE;
+      }
+    }
+    $emSegments = wlt_bookshop_extract_em_segments($raw);
+    foreach ($emSegments as $segment) {
+      $candidates[$segment] = TRUE;
+    }
+  }
+  return array_keys($candidates);
+}
+
+/**
+ * Collect raw title sources from configured fields.
+ */
+function wlt_bookshop_collect_title_source_texts(NodeInterface $node): array {
+  $texts = [];
+  $bundle = $node->bundle();
+  $configured = wlt_bookshop_get_bundle_field($bundle, 'title_field');
+  if ($configured && $node->hasField($configured) && !$node->get($configured)->isEmpty()) {
+    foreach ($node->get($configured) as $item) {
+      if (isset($item->value) && $item->value !== '') {
+        $texts[] = (string) $item->value;
+        break;
+      }
+      $value = $item->getValue();
+      if (isset($value['value']) && $value['value'] !== '') {
+        $texts[] = (string) $value['value'];
+        break;
+      }
+    }
+  }
+  if ($node->hasField('field_sidebartitle') && !$node->get('field_sidebartitle')->isEmpty()) {
+    $value = (string) $node->get('field_sidebartitle')->value;
+    if ($value !== '') {
+      $texts[] = $value;
+    }
+  }
+  if ($node->hasField('field_richtitle') && !$node->get('field_richtitle')->isEmpty()) {
+    $value = (string) $node->get('field_richtitle')->value;
+    if ($value !== '') {
+      $texts[] = $value;
+    }
+  }
+  return $texts;
+}
+
+/**
+ * Extract substring prior to trailing "by ..." pattern.
+ */
+function wlt_bookshop_extract_title_work_segment(string $text): string {
+  if ($text === '') {
+    return '';
+  }
+  $lower = mb_strtolower($text, 'UTF-8');
+  $pos = mb_strripos($lower, ' by ');
+  if ($pos === FALSE) {
+    return '';
+  }
+  $work = trim(mb_substr($text, 0, $pos));
+  return $work;
+}
+
+/**
+ * Extract emphasized segments within <em> tags.
+ */
+function wlt_bookshop_extract_em_segments(string $raw): array {
+  if ($raw === '') {
+    return [];
+  }
+  $matches = [];
+  if (!preg_match_all('/<em[^>]*>(.*?)<\/em>/is', $raw, $matches)) {
+    return [];
+  }
+  $segments = [];
+  foreach ($matches[1] as $segment) {
+    $text = Html::decodeEntities($segment);
+    $text = wlt_bookshop_sanitize_text($text);
+    if ($text !== '') {
+      $segments[$text] = TRUE;
+    }
+  }
+  return array_keys($segments);
+}
+
+/**
+ * Wrap the first body image with a Bookshop affiliate link.
+ */
+function wlt_bookshop_wrap_first_image_markup(string $html, string $isbn): ?string {
+  if ($html === '' || str_contains($html, 'data-wlt-bookshop-cover')) {
+    return NULL;
+  }
+  $affiliateUrl = wlt_bookshop_build_bookshop_isbn_url($isbn);
+  if ($affiliateUrl === '') {
+    return NULL;
+  }
+  $internal = libxml_use_internal_errors(TRUE);
+  $wrapped = '<div id="wlt-bookshop-body-wrapper">' . $html . '</div>';
+  $dom = new \DOMDocument('1.0', 'UTF-8');
+  $loaded = $dom->loadHTML('<?xml encoding="utf-8" ?>' . $wrapped, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+  if (!$loaded) {
+    libxml_clear_errors();
+    libxml_use_internal_errors($internal);
+    return NULL;
+  }
+  $xpath = new \DOMXPath($dom);
+  $img = $xpath->query('//img')->item(0);
+  if (!$img || !$img->parentNode) {
+    libxml_clear_errors();
+    libxml_use_internal_errors($internal);
+    return NULL;
+  }
+  $parent = $img->parentNode;
+  if (strtolower($parent->nodeName) === 'a' && $parent->hasAttribute('data-wlt-bookshop-cover')) {
+    libxml_clear_errors();
+    libxml_use_internal_errors($internal);
+    return NULL;
+  }
+  $anchor = $dom->createElement('a');
+  $anchor->setAttribute('href', $affiliateUrl);
+  $anchor->setAttribute('target', '_blank');
+  $anchor->setAttribute('rel', 'noopener noreferrer');
+  $anchor->setAttribute('class', 'wlt-bookshop-cover-link');
+  $anchor->setAttribute('data-wlt-bookshop-cover', '1');
+  $parent->replaceChild($anchor, $img);
+  $anchor->appendChild($img);
+  $container = $dom->getElementById('wlt-bookshop-body-wrapper');
+  $newHtml = '';
+  if ($container) {
+    foreach ($container->childNodes as $child) {
+      $newHtml .= $dom->saveHTML($child);
+    }
+  }
+  libxml_clear_errors();
+  libxml_use_internal_errors($internal);
+  return $newHtml !== '' ? $newHtml : NULL;
+}
+
+/**
+ * Build a Bookshop affiliate URL for a given ISBN.
+ */
+function wlt_bookshop_build_bookshop_isbn_url(string $isbn): string {
+  $isbn = wlt_bookshop_normalize_isbn($isbn);
+  if (!$isbn) {
+    return '';
+  }
+  $affiliate = wlt_bookshop_get_affiliate_id();
+  $query = [
+    'keywords' => $isbn,
+  ];
+  if ($affiliate !== '') {
+    $query['aff'] = $affiliate;
+  }
+  return 'https://bookshop.org/books?' . http_build_query($query);
+}
+
+/**
+ * Implements hook_entity_view().
+ */
+function wlt_bookshop_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, $view_mode): void {
+  if (!$entity instanceof NodeInterface || $entity->bundle() !== 'book_review') {
+    return;
+  }
+  $isbn = wlt_bookshop_get_cover_link_target((int) $entity->id());
+  if ($isbn === NULL || $isbn === '') {
+    return;
+  }
+  if (!isset($build['body']) || !is_array($build['body'])) {
+    return;
+  }
+  foreach ($build['body'] as &$item) {
+    if (!is_array($item)) {
+      continue;
+    }
+    if (isset($item['#markup']) && is_string($item['#markup'])) {
+      $wrapped = wlt_bookshop_wrap_first_image_markup($item['#markup'], $isbn);
+      if ($wrapped !== NULL) {
+        $item['#markup'] = $wrapped;
+        break;
+      }
+    }
+    elseif (isset($item['#text']) && is_string($item['#text'])) {
+      $wrapped = wlt_bookshop_wrap_first_image_markup($item['#text'], $isbn);
+      if ($wrapped !== NULL) {
+        $item['#text'] = $wrapped;
+        break;
+      }
+    }
+  }
+}
+
+/**
  * Extract the rendered body field text for substring comparisons.
  */
 function wlt_bookshop_extract_body_text(NodeInterface $node): string {
@@ -930,4 +1189,32 @@ function wlt_bookshop_store_no_isbn(NodeInterface $node, string $isbn_field): vo
     return;
   }
   $node->set($isbn_field, [['value' => WLT_BOOKSHOP_NO_ISBN_SENTINEL]]);
+}
+/**
+ * Store or clear the cover-link target ISBN for a node.
+ */
+function wlt_bookshop_store_cover_link_target(int $nid, ?string $isbn): void {
+  $state = \Drupal::state();
+  $key = 'wlt_bookshop.cover_link_targets';
+  $map = $state->get($key, []);
+  if ($isbn === NULL) {
+    if (isset($map[$nid])) {
+      unset($map[$nid]);
+      $state->set($key, $map);
+    }
+    return;
+  }
+  $map[$nid] = $isbn;
+  $state->set($key, $map);
+}
+
+/**
+ * Retrieve the cover-link target ISBN for a node.
+ */
+function wlt_bookshop_get_cover_link_target(int $nid): ?string {
+  $map = \Drupal::state()->get('wlt_bookshop.cover_link_targets', []);
+  if (!isset($map[$nid])) {
+    return NULL;
+  }
+  return (string) $map[$nid];
 }

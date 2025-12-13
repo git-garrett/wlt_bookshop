@@ -97,6 +97,12 @@ class BookIsbnProcessForm extends FormBase {
       '#description' => $this->t('Reprocess nodes where the ISBN field is empty or contains the sentinel value.'),
       '#default_value' => FALSE,
     ];
+    $form['title_cover_link'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Title match + cover link (book reviews only)'),
+      '#description' => $this->t('Aggressively match titles (including rich title fields) to Open Library works, prioritize that ISBN, and wrap the first body image with a Bookshop affiliate link. Only applies to book reviews.'),
+      '#default_value' => FALSE,
+    ];
     $form['search_only'] = [
       '#type' => 'checkbox',
       '#title' => $this->t('Skip edition lookups'),
@@ -179,6 +185,7 @@ class BookIsbnProcessForm extends FormBase {
     $replaceSentinelsOnly = (bool) $form_state->getValue('replace_sentinels_only');
     $replaceBlankOrSentinel = (bool) $form_state->getValue('replace_blank_or_sentinel');
     $titleFallbackSentinels = (bool) $form_state->getValue('title_fallback_sentinels');
+    $titleCoverLink = (bool) $form_state->getValue('title_cover_link');
     if ($titleFallbackSentinels) {
       $replaceSentinelsOnly = TRUE;
     }
@@ -188,6 +195,7 @@ class BookIsbnProcessForm extends FormBase {
     $workIndexPath = trim((string) $form_state->getValue('work_index_path'));
     $editionIndexPath = trim((string) $form_state->getValue('edition_index_path'));
     $editionDumpPath = trim((string) $form_state->getValue('edition_dump_path'));
+    $traceLookup = (bool) $form_state->getValue('trace_lookup');
 
     $storage = \Drupal::entityTypeManager()->getStorage('node');
     $bundle_settings = array_filter(
@@ -196,6 +204,13 @@ class BookIsbnProcessForm extends FormBase {
         return !empty($settings['author_field']) && !empty($settings['isbn_field']);
       }
     );
+    if ($titleCoverLink) {
+      $bundle_settings = array_intersect_key($bundle_settings, ['book_review' => TRUE]);
+      if (empty($bundle_settings)) {
+        $this->messenger()->addStatus($this->t('Book review bundle is not configured; cannot run title cover linking.'));
+        return;
+      }
+    }
     if (empty($bundle_settings)) {
       $this->messenger()->addStatus($this->t('No bundles are configured for Bookshop processing.'));
       return;
@@ -226,7 +241,7 @@ class BookIsbnProcessForm extends FormBase {
         $this->messenger()->addStatus($this->t('Node @nid has no usable title, author, or translator to search.', ['@nid' => $specific_nid]));
         return;
       }
-      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
+      $this->startBatch([[ $specific_nid ]], $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup, $titleCoverLink);
       return;
     }
 
@@ -238,7 +253,7 @@ class BookIsbnProcessForm extends FormBase {
       }
 
       $chunks = array_chunk($all_nids, $batchSize);
-      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
+      $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup, $titleCoverLink);
       return;
     }
 
@@ -250,7 +265,7 @@ class BookIsbnProcessForm extends FormBase {
     }
 
     $chunks = array_chunk($nids, max(1, min($batchSize, count($nids))));
-    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
+    $this->startBatch($chunks, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup, $titleCoverLink);
   }
 
   /**
@@ -276,12 +291,12 @@ class BookIsbnProcessForm extends FormBase {
    * @param bool $traceLookup
    *   TRUE to stream detailed lookup traces to the CLI.
    */
-  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, bool $traceLookup): void {
+  protected function startBatch(array $chunks, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, bool $traceLookup, bool $titleCoverLink): void {
     $operations = [];
     foreach ($chunks as $chunk) {
       $operations[] = [
         [static::class, 'batchProcess'],
-        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup],
+        [$chunk, $debugEnabled, $apiVerbose, $replaceExisting, $searchOnly, $workIndexPath, $editionIndexPath, $editionDumpPath, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup, $titleCoverLink],
       ];
     }
 
@@ -326,10 +341,12 @@ class BookIsbnProcessForm extends FormBase {
    *   TRUE to replace values when blank or sentinel.
    * @param bool $traceLookup
    *   TRUE to output lookup traces during processing.
+   * @param bool $titleCoverLink
+   *   TRUE when title-cover linking enhancements are enabled.
    * @param array $context
    *   Batch context array.
    */
-  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, bool $traceLookup, array &$context): void {
+  public static function batchProcess(array $nids, bool $debugEnabled, bool $apiVerbose, bool $replaceExisting, bool $searchOnly, string $workIndexPath, string $editionIndexPath, string $editionDumpPath, bool $replaceSentinelsOnly, bool $replaceBlankOrSentinel, bool $traceLookup, bool $titleCoverLink, array &$context): void {
     /** @var \Drupal\wlt_bookshop\Service\BookIsbnLookup $lookup */
     $lookup = \Drupal::service('wlt_bookshop.book_isbn_lookup');
     $storage = \Drupal::entityTypeManager()->getStorage('node');
@@ -367,7 +384,7 @@ class BookIsbnProcessForm extends FormBase {
       if (method_exists($lookup, 'setEditionDumpPath')) {
         $lookup->setEditionDumpPath($editionDumpPath !== '' ? $editionDumpPath : NULL);
       }
-      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup);
+      static::processNodes($nodes, $lookup, $debugEnabled, $logger, $stats, $debugCombined, $context, $replaceExisting, $replaceSentinelsOnly, $replaceBlankOrSentinel, $traceLookup, $titleCoverLink);
     }
     finally {
       if (method_exists($lookup, 'setSkipEditionLookups')) {
@@ -489,10 +506,16 @@ class BookIsbnProcessForm extends FormBase {
    * @param bool $replaceExisting
    *   TRUE when existing ISBN values should be overwritten if new results are
    *   found.
+   * @param bool $replaceSentinelsOnly
+   *   TRUE to limit replacements to sentinel values.
+   * @param bool $replaceBlankOrSentinel
+   *   TRUE to allow replacements when ISBN field is blank or sentinel.
    * @param bool $traceLookup
    *   TRUE when the lookup trace should be printed to the terminal.
+   * @param bool $titleCoverLink
+   *   TRUE when aggressive title cover linking is enabled.
    */
-  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE, bool $replaceSentinelsOnly = FALSE, bool $replaceBlankOrSentinel = FALSE, bool $traceLookup = FALSE): void {
+  protected static function processNodes(array $nodes, BookIsbnLookup $lookup, bool $debugEnabled, LoggerChannelInterface $logger, array &$stats, string &$debugCombined, array &$context, bool $replaceExisting = FALSE, bool $replaceSentinelsOnly = FALSE, bool $replaceBlankOrSentinel = FALSE, bool $traceLookup = FALSE, bool $titleCoverLink = FALSE): void {
     foreach ($nodes as $node) {
       $stats['checked']++;
       if (!$node instanceof NodeInterface) {
@@ -500,6 +523,9 @@ class BookIsbnProcessForm extends FormBase {
       }
       $bundle = $node->bundle();
       if (!wlt_bookshop_bundle_is_enabled($bundle)) {
+        continue;
+      }
+      if ($titleCoverLink && $bundle !== 'book_review') {
         continue;
       }
       $author_field = wlt_bookshop_get_bundle_field($bundle, 'author_field') ?? 'field_author';
@@ -580,6 +606,11 @@ class BookIsbnProcessForm extends FormBase {
         }
       }
 
+      $coverLinkTriggered = FALSE;
+      if ($titleCoverLink && $bundle === 'book_review') {
+        $coverLinkTriggered = \wlt_bookshop_collect_cover_link_isbns($lookup, $node, $found, $debugInfo, $sequenceIds);
+      }
+
       $items = NULL;
       if (!empty($found)) {
         $existing_items = $node->get($isbn_field)->getValue();
@@ -612,6 +643,15 @@ class BookIsbnProcessForm extends FormBase {
         foreach ($existingOrdered as $isbn) {
           $items[] = ['value' => $isbn];
         }
+        $coverLinkIsbn = NULL;
+        if ($titleCoverLink) {
+          if ($coverLinkTriggered && !empty($orderedNew)) {
+            wlt_bookshop_store_cover_link_target((int) $node->id(), $orderedNew[0]);
+          }
+          else {
+            wlt_bookshop_store_cover_link_target((int) $node->id(), NULL);
+          }
+        }
         try {
           $node->set($isbn_field, $items);
           $node->save();
@@ -631,6 +671,9 @@ class BookIsbnProcessForm extends FormBase {
         }
       }
       else {
+        if ($titleCoverLink) {
+          wlt_bookshop_store_cover_link_target((int) $node->id(), NULL);
+        }
         if ($replaceExisting || $node->get($isbn_field)->isEmpty()) {
           \wlt_bookshop_store_no_isbn($node, $isbn_field);
           try {
