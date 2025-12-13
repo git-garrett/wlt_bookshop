@@ -683,7 +683,8 @@ class BookIsbnLookup {
       return NULL;
     }
 
-    $data = json_decode((string) $response->getBody(), TRUE);
+    $body = (string) $response->getBody();
+    $data = json_decode($body, TRUE);
     if (!is_array($data) || empty($data['docs']) || !is_array($data['docs'])) {
       if (is_array($debug)) {
         $debug['author'] = $author;
@@ -761,7 +762,8 @@ class BookIsbnLookup {
         }
 
         if (is_array($debug)) {
-          $entry = $this->createEditionDebugEntry($editionKey, $payload, $formatInfo, FALSE);
+          $source = $payload['_source'] ?? 'api';
+          $entry = $this->createEditionDebugEntry($editionKey, $payload, $formatInfo, FALSE, $source);
           if ($pickedIsbn !== NULL) {
             $entry['picked'] = $pickedIsbn;
             $debug['found_isbn'] = $pickedIsbn;
@@ -862,6 +864,11 @@ class BookIsbnLookup {
         ];
       }
       return [];
+    }
+
+    if (is_array($debug)) {
+      $debug['search']['response_sample'] = $this->summarizeSearchDocs($data['docs']);
+      $debug['search']['raw_bytes'] = strlen($body);
     }
 
     if ($this->skipEditionLookups) {
@@ -1025,7 +1032,7 @@ class BookIsbnLookup {
     if (!empty($keysToFetch)) {
       if ($useLocal) {
         foreach ($keysToFetch as $editionKey) {
-          $payload = $this->loadEditionPayloadFromFile($editionKey);
+          $payload = $this->loadEditionPayloadFromFile($editionKey, $debug);
           if ($payload === FALSE) {
             if ($useCache) {
               $this->editionCache[$editionKey] = FALSE;
@@ -1039,6 +1046,9 @@ class BookIsbnLookup {
               ];
             }
             continue;
+          }
+          if (is_array($payload)) {
+            $payload['_source'] = 'dump';
           }
           $results[$editionKey] = $payload;
           if ($useCache) {
@@ -1097,6 +1107,9 @@ class BookIsbnLookup {
             continue;
           }
 
+          if (is_array($payload)) {
+            $payload['_source'] = 'api';
+          }
           $results[$editionKey] = $payload;
           if ($useCache) {
             $this->editionCache[$editionKey] = $payload;
@@ -1167,7 +1180,8 @@ class BookIsbnLookup {
       ]);
       return [];
     }
-    $data = json_decode((string) $response->getBody(), TRUE);
+    $body = (string) $response->getBody();
+    $data = json_decode($body, TRUE);
     if (!is_array($data) || empty($data['docs'])) {
       return [];
     }
@@ -1175,6 +1189,8 @@ class BookIsbnLookup {
       $debug['title_fallback'] = [
         'title' => $title,
         'docs' => $data['docs'],
+        'response_sample' => $this->summarizeSearchDocs($data['docs']),
+        'raw_bytes' => strlen($body),
       ];
     }
     $entries = $this->buildSearchDocIsbnEntries($data['docs']);
@@ -1220,20 +1236,22 @@ class BookIsbnLookup {
     }
 
     if (is_array($debug)) {
-      $debug['editions'][] = $this->createEditionDebugEntry($editionKey, $payload, $formatInfo, $preferred);
+      $source = $payload['_source'] ?? 'api';
+      $debug['editions'][] = $this->createEditionDebugEntry($editionKey, $payload, $formatInfo, $preferred, $source);
     }
   }
 
   /**
    * Build a consistent debug entry for edition payloads.
    */
-  protected function createEditionDebugEntry(string $editionKey, array $payload, array $formatInfo, bool $preferred): array {
+  protected function createEditionDebugEntry(string $editionKey, array $payload, array $formatInfo, bool $preferred, string $source = 'api'): array {
     $entry = [
       'edition' => $editionKey,
       'url' => 'https://openlibrary.org/books/' . rawurlencode($editionKey) . '.json',
       'format' => $formatInfo['format'],
       'language' => $formatInfo['language'],
       'country' => $formatInfo['country'],
+      'source' => $source,
     ];
     if (!empty($payload['isbn_13'])) {
       $entry['isbn_13'] = $payload['isbn_13'];
@@ -1258,6 +1276,13 @@ class BookIsbnLookup {
     if ($this->shouldUseWorkIndex()) {
       $editionRequests = $this->getEditionKeysForWork($workKey);
       if (!empty($editionRequests)) {
+        if (is_array($debug)) {
+          $debug['work_index'][] = [
+            'work' => $workKey,
+            'editions' => $editionRequests,
+            'source' => 'sqlite',
+          ];
+        }
         $payloads = $this->loadEditionPayloads($editionRequests, $debug, $loadedEditions);
         foreach ($editionRequests as $editionKey) {
           if (empty($payloads[$editionKey]) || !is_array($payloads[$editionKey])) {
@@ -1331,6 +1356,13 @@ class BookIsbnLookup {
       $entries = $payload['entries'];
       if ($useCache) {
         $this->workEditionsCache[$workKey] = $entries;
+      }
+      if (is_array($debug)) {
+        $debug['works'][] = [
+          'work' => $workKey,
+          'url' => $url,
+          'entries' => count($entries),
+        ];
       }
     }
 
@@ -1803,6 +1835,38 @@ class BookIsbnLookup {
   }
 
   /**
+   * Produce a lightweight summary of Open Library search docs.
+   *
+   * @param array $docs
+   *   Raw documents from search.json.
+   * @param int $limit
+   *   Maximum number of docs to include.
+   *
+   * @return array<int, array<string, mixed>>
+   *   Summaries containing title, key, and counts.
+   */
+  protected function summarizeSearchDocs(array $docs, int $limit = 5): array {
+    $summaries = [];
+    $count = 0;
+    foreach ($docs as $doc) {
+      if (!is_array($doc)) {
+        continue;
+      }
+      $summary = [
+        'title' => isset($doc['title']) ? (string) $doc['title'] : '',
+        'key' => isset($doc['key']) ? (string) $doc['key'] : '',
+        'cover_edition_key' => isset($doc['cover_edition_key']) ? (string) $doc['cover_edition_key'] : '',
+        'isbn_count' => !empty($doc['isbn']) && is_array($doc['isbn']) ? count($doc['isbn']) : 0,
+      ];
+      $summaries[] = $summary;
+      if (++$count >= $limit) {
+        break;
+      }
+    }
+    return $summaries;
+  }
+
+  /**
    * Split a title with a trailing "by …" segment into work/byline parts.
    */
   protected function splitTitleByline(string $title): array {
@@ -1888,7 +1952,8 @@ class BookIsbnLookup {
       ]);
       return [];
     }
-    $data = json_decode((string) $response->getBody(), TRUE);
+    $body = (string) $response->getBody();
+    $data = json_decode($body, TRUE);
     if (!is_array($data) || empty($data['docs']) || !is_array($data['docs'])) {
       return [];
     }
@@ -1897,6 +1962,8 @@ class BookIsbnLookup {
         'mode' => $mode,
         'title' => $title,
         'num_docs' => isset($data['numFound']) ? (int) $data['numFound'] : count($data['docs']),
+        'response_sample' => $this->summarizeSearchDocs($data['docs']),
+        'raw_bytes' => strlen($body),
       ];
     }
     $entries = [];
@@ -2097,13 +2164,26 @@ class BookIsbnLookup {
     return $this->editionDumpHandle;
   }
 
-  protected function loadEditionPayloadFromFile(string $editionKey) {
+  protected function loadEditionPayloadFromFile(string $editionKey, ?array &$debug = NULL) {
     $offset = $this->getEditionOffset($editionKey);
     if ($offset === NULL) {
+      if (is_array($debug)) {
+        $debug['dump_queries'][] = [
+          'edition' => $editionKey,
+          'status' => 'no_index',
+        ];
+      }
       return FALSE;
     }
     $handle = $this->getEditionDumpHandle();
     if (!is_resource($handle)) {
+      if (is_array($debug)) {
+        $debug['dump_queries'][] = [
+          'edition' => $editionKey,
+          'offset' => $offset,
+          'status' => 'no_dump',
+        ];
+      }
       return FALSE;
     }
     if (fseek($handle, $offset) !== 0) {
@@ -2111,6 +2191,13 @@ class BookIsbnLookup {
         '@offset' => $offset,
         '@edition' => $editionKey,
       ]);
+      if (is_array($debug)) {
+        $debug['dump_queries'][] = [
+          'edition' => $editionKey,
+          'offset' => $offset,
+          'status' => 'seek_failed',
+        ];
+      }
       return FALSE;
     }
     $line = fgets($handle);
@@ -2119,16 +2206,47 @@ class BookIsbnLookup {
         '@edition' => $editionKey,
         '@offset' => $offset,
       ]);
+      if (is_array($debug)) {
+        $debug['dump_queries'][] = [
+          'edition' => $editionKey,
+          'offset' => $offset,
+          'status' => 'read_failed',
+        ];
+      }
       return FALSE;
     }
     $line = rtrim($line, "\r\n");
     $parts = explode("\t", $line, 5);
     if (count($parts) < 5) {
+      if (is_array($debug)) {
+        $debug['dump_queries'][] = [
+          'edition' => $editionKey,
+          'offset' => $offset,
+          'status' => 'invalid_record',
+        ];
+      }
       return FALSE;
     }
     $json = $parts[4];
     $payload = json_decode($json, TRUE);
-    return is_array($payload) ? $payload : FALSE;
+    if (!is_array($payload)) {
+      if (is_array($debug)) {
+        $debug['dump_queries'][] = [
+          'edition' => $editionKey,
+          'offset' => $offset,
+          'status' => 'json_error',
+        ];
+      }
+      return FALSE;
+    }
+    if (is_array($debug)) {
+      $debug['dump_queries'][] = [
+        'edition' => $editionKey,
+        'offset' => $offset,
+        'status' => 'hit',
+      ];
+    }
+    return $payload;
   }
 
   /**

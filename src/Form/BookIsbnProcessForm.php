@@ -1092,6 +1092,12 @@ class BookIsbnProcessForm extends FormBase {
       if (isset($s['error'])) {
         $lines[] = 'Search error: ' . $s['error'];
       }
+      if (!empty($s['response_sample'])) {
+        $lines[] = 'Search response sample:';
+        foreach ($s['response_sample'] as $sample) {
+          $lines[] = '- ' . ($sample['title'] ?? '') . ' [' . ($sample['key'] ?? '') . '] isbn_count=' . ($sample['isbn_count'] ?? 0);
+        }
+      }
     }
       if (!empty($debugInfo['bookshop'])) {
       $b = $debugInfo['bookshop'];
@@ -1115,6 +1121,32 @@ class BookIsbnProcessForm extends FormBase {
     if (!empty($debugInfo['candidate_edition_keys'])) {
       $lines[] = 'Candidate editions: ' . implode(', ', array_keys($debugInfo['candidate_edition_keys']));
     }
+    if (!empty($debugInfo['title_query'])) {
+      $lines[] = 'Title fallback queries:';
+      foreach ($debugInfo['title_query'] as $entry) {
+        $line = '- [' . ($entry['mode'] ?? '') . '] ' . ($entry['title'] ?? '') . ' docs=' . ($entry['num_docs'] ?? 0);
+        if (!empty($entry['response_sample'])) {
+          $line .= ' sample=' . json_encode($entry['response_sample']);
+        }
+        $lines[] = $line;
+      }
+    }
+    if (!empty($debugInfo['work_index'])) {
+      $lines[] = 'Work index lookups:';
+      foreach ($debugInfo['work_index'] as $entry) {
+        $lines[] = '- work ' . ($entry['work'] ?? '') . ' editions=' . implode(', ', (array) ($entry['editions'] ?? []));
+      }
+    }
+    if (!empty($debugInfo['dump_queries'])) {
+      $lines[] = 'Dump queries:';
+      foreach ($debugInfo['dump_queries'] as $entry) {
+        $line = '- edition ' . ($entry['edition'] ?? '') . ' status=' . ($entry['status'] ?? '');
+        if (isset($entry['offset'])) {
+          $line .= ' offset=' . $entry['offset'];
+        }
+        $lines[] = $line;
+      }
+    }
     if (!empty($debugInfo['editions'])) {
       $lines[] = 'Edition lookups:';
       $max = 20;
@@ -1122,6 +1154,9 @@ class BookIsbnProcessForm extends FormBase {
       foreach ($debugInfo['editions'] as $ed) {
         if ($i++ >= $max) { $lines[] = '...truncated...'; break; }
         $line = '- ' . ($ed['edition'] ?? '') . ' [' . ($ed['url'] ?? '') . ']';
+        if (!empty($ed['source'])) {
+          $line .= ' source=' . $ed['source'];
+        }
         if (!empty($ed['isbn_13'])) {
           $line .= ' isbn_13=' . json_encode($ed['isbn_13']);
         }
